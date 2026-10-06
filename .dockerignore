@@ -1,0 +1,9 @@
+data
+uploads
+certs
+node_modules
+.env
+env
+.git
+public/bundle.js
+*.md

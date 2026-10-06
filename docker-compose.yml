@@ -1,0 +1,14 @@
+services:
+  camping-diary-api:
+    build: .
+    container_name: camping-diary-api
+    restart: unless-stopped
+    ports:
+      - "4000:4000"
+      - "4443:4443"
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+      - ./uploads:/app/uploads
+      - ./certs:/app/certs

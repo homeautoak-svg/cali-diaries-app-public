@@ -1,0 +1,29 @@
+{
+  "name": "camping-diary",
+  "version": "1.0.0",
+  "description": "Self-hosted camping diary: plan trips, write trip reports, track your vehicle and costs. German and English.",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.3.0",
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "heic-convert": "^2.1.0",
+    "multer": "^2.0.0",
+    "sharp": "^0.35.3",
+    "js-yaml": "^4.1.0"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "esbuild": "^0.28.1",
+    "leaflet": "^1.9.4",
+    "lucide-react": "^1.25.0",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
+  }
+}
