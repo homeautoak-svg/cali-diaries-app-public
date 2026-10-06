@@ -1,0 +1,12 @@
+# Daten und Geheimnisse / data and secrets
+data/
+uploads/
+certs/
+.env
+env
+
+# Build und Abhaengigkeiten / build output and dependencies
+node_modules/
+public/bundle.js
+
+.DS_Store

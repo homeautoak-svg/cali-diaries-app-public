@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="de-CH">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Camping Diary</title>
+
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-title" content="Camping Diary" />
+  <meta name="theme-color" content="#FFFFFF" />
+  <link rel="apple-touch-icon" href="/icon.png" />
+  <link rel="manifest" href="/manifest.json" />
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+
+  <style>
+    html, body { margin: 0; padding: 0; background: #FFFFFF; height: 100%; overflow: hidden; overscroll-behavior: none; }
+    #root { height: 100%; }
+    /* Startbildschirm: steht im HTML, damit er sofort erscheint, noch bevor die App geladen
+       ist. React ersetzt ihn beim ersten Rendern automatisch. */
+    .splash { position: fixed; inset: 0; background: #2F5233; color: #FFFFFF; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; gap: 18px; font-family: 'Inter', system-ui, sans-serif; }
+    .splash-credit { position: absolute; top: calc(16px + env(safe-area-inset-top, 0px)); left: 0; right: 0; text-align: center;
+      font-size: 12px; font-style: italic; color: #A9C2A5; }
+    .splash-logo { width: 112px; height: 112px; border-radius: 30px; background: #3B6640; display: flex; align-items: center; justify-content: center; }
+    .splash h1 { margin: 0; font-family: 'Fraunces', Georgia, serif; font-weight: 600; font-size: 30px; }
+    .splash-track { width: 140px; height: 4px; border-radius: 2px; background: #3B6640; overflow: hidden; margin-top: 6px; }
+    .splash-bar { width: 40%; height: 4px; border-radius: 2px; background: #E8B923; animation: splash-slide 1.4s ease-in-out infinite; }
+    @keyframes splash-slide { 0% { transform: translateX(-100%); } 100% { transform: translateX(250%); } }
+    .splash-status { font-size: 14px; color: #CFE0CC; }
+    .splash-slow { display: none; position: absolute; left: 18px; right: 18px; bottom: calc(48px + env(safe-area-inset-bottom, 0px));
+      padding: 14px; border-radius: 14px; background: #1F3A24; color: #E3EDE0; font-size: 14px; line-height: 1.4; }
+    .splash-slow button { margin-top: 10px; background: none; border: none; padding: 0; color: #FFFFFF; font-weight: 600;
+      font-size: 14px; font-family: inherit; cursor: pointer; }
+    @media (prefers-reduced-motion: reduce) { .splash-bar { animation: none; } }
+  </style>
+</head>
+<body>
+  <div id="root">
+    <div class="splash" role="status" aria-label="Camping Diary wird geladen">
+      <span class="splash-credit">Made with Love by Andy and Claude ❤️</span>
+      <div class="splash-logo">
+        <svg width="84" height="84" viewBox="0 0 64 64" aria-hidden="true">
+          <path d="M17 22 L21 11 L47 11 L49 22 Z" fill="#E8B923"></path>
+          <path d="M21 11 L47 11" stroke="#B98F16" stroke-width="1.5"></path>
+          <path d="M11 22 H49 Q56 22 57.5 29 L59 40 Q59 46 53 46 H11 Q6 46 6 41 V27 Q6 22 11 22 Z" fill="#FFFFFF"></path>
+          <rect x="11" y="26" width="11" height="8" rx="2" fill="#2F5233"></rect>
+          <rect x="25" y="26" width="13" height="8" rx="2" fill="#2F5233"></rect>
+          <rect x="41" y="26" width="8" height="8" rx="2" fill="#2F5233"></rect>
+          <path d="M52 26 H54.5 Q56 26 56.4 28 L57.2 34 H52 Z" fill="#2F5233"></path>
+          <rect x="6" y="37" width="53" height="2.5" fill="#CFE0CC"></rect>
+          <circle cx="18" cy="46" r="6" fill="#1F3A24" stroke="#FFFFFF" stroke-width="2.5"></circle>
+          <circle cx="47" cy="46" r="6" fill="#1F3A24" stroke="#FFFFFF" stroke-width="2.5"></circle>
+          <path d="M2 55 H62" stroke="#5E8A63" stroke-width="2" stroke-linecap="round"></path>
+        </svg>
+      </div>
+      <h1>Camping Diary</h1>
+      <div class="splash-track"><div class="splash-bar"></div></div>
+      <span class="splash-status" id="splash-status">Lade Daten</span>
+      <div class="splash-slow" id="splash-slow">
+        <span id="splash-slow-text">Der Server antwortet gerade langsam. Ist die Verbindung (z.B. VPN oder Tailscale) auf diesem Gerät aktiv?</span><br>
+        <button type="button" id="splash-retry" onclick="location.reload()">Erneut versuchen</button>
+      </div>
+    </div>
+  </div>
+  <script>
+    // Sprache des Startbildschirms: zuletzt in der App gewaehlte Sprache, sonst die des Geraets.
+    var splashLang = 'de';
+    try { splashLang = localStorage.getItem('cd_lang') || ''; } catch (e) { splashLang = ''; }
+    if (!splashLang) splashLang = (navigator.language || 'de').toLowerCase().indexOf('de') === 0 ? 'de' : 'en';
+    var splashText = splashLang === 'en'
+      ? { loading: 'Loading data', slowStatus: 'Connecting takes longer than usual',
+          slow: 'The server is responding slowly. Is the connection (e.g. VPN or Tailscale) active on this device?', retry: 'Try again' }
+      : { loading: 'Lade Daten', slowStatus: 'Verbindung dauert länger als üblich',
+          slow: 'Der Server antwortet gerade langsam. Ist die Verbindung (z.B. VPN oder Tailscale) auf diesem Gerät aktiv?', retry: 'Erneut versuchen' };
+    document.documentElement.lang = splashLang;
+    document.getElementById('splash-status').textContent = splashText.loading;
+    document.getElementById('splash-slow-text').textContent = splashText.slow;
+    document.getElementById('splash-retry').textContent = splashText.retry;
+
+    // iOS 26: Nach dem Schliessen der Tastatur bleibt die Ansicht teils verschoben; zuruecksetzen.
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', function () {
+        if (window.visualViewport.height >= window.innerHeight - 1) window.scrollTo(0, 0);
+      });
+    }
+    setTimeout(function () {
+      var slow = document.getElementById('splash-slow');
+      var status = document.getElementById('splash-status');
+      if (slow) slow.style.display = 'block';
+      if (status) status.textContent = splashText.slowStatus;
+    }, 6000);
+  </script>
+  <script src="/bundle.js"></script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('/sw.js').catch(() => {});
+      });
+    }
+  </script>
+</body>
+</html>

@@ -1,0 +1,11 @@
+{
+  "name": "Camping Diary",
+  "short_name": "Camping Diary",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#FFFFFF",
+  "theme_color": "#FFFFFF",
+  "icons": [
+    { "src": "/icon.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}
