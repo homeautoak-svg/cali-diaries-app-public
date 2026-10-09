@@ -144,7 +144,20 @@ const I18N = {
     'tour.nav.text': 'Hier wechselst du zwischen Übersicht, Trips, Fahrzeug, Finanzen und Rückblick.',
     'tour.settings.title': 'Einstellungen',
     'tour.settings.text': 'Startort, Währung, Fahrzeug und Sprache änderst du hier. Auch diese Einführung kannst du hier jederzeit nochmals ansehen.',
-    'tour.finish': 'Los geht’s'
+    'tour.finish': 'Los geht’s',
+    'specs.title': 'Masse und Gewicht',
+    'specs.add': 'Masse und Gewicht erfassen',
+    'specs.length': 'Länge (m)',
+    'specs.width': 'Breite (m)',
+    'specs.height': 'Höhe (m)',
+    'specs.weight': 'Leergewicht (kg)',
+    'specs.payload': 'Max. Zuladung (kg)',
+    'specs.l': 'L',
+    'specs.w': 'B',
+    'specs.h': 'H',
+    'specs.weightShort': 'Leergewicht',
+    'specs.payloadShort': 'Zuladung',
+    'specs.invalid': 'Bitte nur Zahlen eingeben.'
   },
   en: {
     'common.next': 'Next',
@@ -186,7 +199,20 @@ const I18N = {
     'tour.nav.text': 'Switch between the five main areas here: overview, trips, vehicle, finances and review.',
     'tour.settings.title': 'Settings',
     'tour.settings.text': 'Change home location, currency, vehicle and language here. You can also watch this introduction again at any time.',
-    'tour.finish': 'Let’s go'
+    'tour.finish': 'Let’s go',
+    'specs.title': 'Dimensions and weight',
+    'specs.add': 'Add dimensions and weight',
+    'specs.length': 'Length (m)',
+    'specs.width': 'Width (m)',
+    'specs.height': 'Height (m)',
+    'specs.weight': 'Kerb weight (kg)',
+    'specs.payload': 'Max. payload (kg)',
+    'specs.l': 'L',
+    'specs.w': 'W',
+    'specs.h': 'H',
+    'specs.weightShort': 'Kerb weight',
+    'specs.payloadShort': 'Payload',
+    'specs.invalid': 'Please enter numbers only.'
   }
 };
 function lang() {
@@ -491,16 +517,19 @@ const theme = {
   '--font-mono': "'IBM Plex Mono', monospace"
 };
 
-// Eigene, schlichte Van-Silhouette (keine Markengrafik, nur eine generische Form in
-// einfacher Kastenform), fuer die Fahrzeug-Kachel.
+// Eigenes Fahrzeug-Symbol: generischer Camper von der Seite mit Aufstelldach (keine
+// Markengrafik), gezeichnet im Stil der Lucide-Symbole (24er-Raster, Linie 2, runde Enden),
+// damit es in der Navigationsleiste zu den uebrigen Symbolen passt.
 function CampervanIcon({ size = 24, color = 'currentColor' }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <rect x="2.5" y="7" width="19" height="9" rx="2" stroke={color} strokeWidth="1.6" />
-      <path d="M2.5 12H21.5" stroke={color} strokeWidth="1.4" opacity="0.5" />
-      <path d="M9 7V16" stroke={color} strokeWidth="1.4" opacity="0.5" />
-      <circle cx="7" cy="17" r="2" fill={color} />
-      <circle cx="17" cy="17" r="2" fill={color} />
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2"
+      strokeLinecap="round" strokeLinejoin="round" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <path d="M13 8v4a1 1 0 0 0 1 1h6.1a1 1 0 0 1 .7.3l.9.9a1 1 0 0 1 .3.7V18a1 1 0 0 1-1 1h-3" />
+      <path d="M5 19H3a1 1 0 0 1-1-1V10a2 2 0 0 1 2-2h12c1.1 0 2.1.8 2.4 1.8l.9 3.2" />
+      <path d="M3.5 8 13 4.5V8" />
+      <path d="M9 19h5" />
+      <circle cx="16" cy="19" r="2" />
+      <circle cx="7" cy="19" r="2" />
     </svg>
   );
 }
@@ -3911,6 +3940,118 @@ function vehicleTodoDisplay(todo, typeLabel) {
   };
 }
 
+// Fahrzeugdaten (Masse in m, Gewichte in kg), gespeichert als Einstellungen dieser Installation.
+const VEHICLE_SPEC_FIELDS = [
+  { key: 'vehicle_length_m', label: 'specs.length', short: 'specs.l', unit: 'm' },
+  { key: 'vehicle_width_m', label: 'specs.width', short: 'specs.w', unit: 'm' },
+  { key: 'vehicle_height_m', label: 'specs.height', short: 'specs.h', unit: 'm' },
+  { key: 'vehicle_weight_kg', label: 'specs.weight', short: 'specs.weightShort', unit: 'kg' },
+  { key: 'vehicle_payload_kg', label: 'specs.payload', short: 'specs.payloadShort', unit: 'kg' }
+];
+
+// Masse: Komma oder Punkt als Dezimaltrennzeichen. Gewichte sind ganze kg, Trennzeichen wie
+// ' . , oder Leerzeichen werden ignoriert (2'950, 2.950 und 2950 ergeben alle 2950 kg).
+function parseSpecNumber(field, raw) {
+  let cleaned = String(raw ?? '').trim().replace(/['\s\u2019]/g, '');
+  if (cleaned === '') return '';
+  cleaned = field.unit === 'kg' ? cleaned.replace(/[.,]/g, '') : cleaned.replace(',', '.');
+  const n = Number(cleaned);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+function fmtSpec(field, value) {
+  const n = Number(value);
+  return field.unit === 'm'
+    ? n.toLocaleString(numLocale(), { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    : Math.round(n).toLocaleString(numLocale());
+}
+
+// Infozeile unter den Kopfkarten im Fahrzeug-Bereich, immer sichtbar. Antippen oeffnet das Formular.
+function VehicleSpecsBar({ specs, onEdit }) {
+  const has = (f) => specs[f.key] != null && specs[f.key] !== '';
+  const dims = VEHICLE_SPEC_FIELDS.filter(f => f.unit === 'm' && has(f));
+  const weights = VEHICLE_SPEC_FIELDS.filter(f => f.unit === 'kg' && has(f));
+  const empty = dims.length === 0 && weights.length === 0;
+  return (
+    <button type="button" onClick={onEdit} aria-label={tr('specs.title')} style={{
+      display: 'flex', alignItems: 'center', gap: 10, width: '100%', padding: '10px 14px', borderRadius: 12,
+      border: '1px solid var(--border)', background: 'var(--card-alt)', cursor: 'pointer', textAlign: 'left',
+      fontFamily: 'var(--font-body)', color: 'var(--text)', minHeight: 44
+    }}>
+      <Ruler size={17} color="var(--forest)" style={{ flexShrink: 0 }} />
+      {empty ? (
+        <span style={{ flex: 1, fontSize: 14, color: 'var(--forest)', fontWeight: 600 }}>{tr('specs.add')}</span>
+      ) : (
+        <span style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 2, fontSize: 13, fontVariantNumeric: 'tabular-nums', minWidth: 0 }}>
+          {dims.length > 0 && (
+            <span>{dims.map(f => `${tr(f.short)} ${fmtSpec(f, specs[f.key])}`).join(' · ')} m</span>
+          )}
+          {weights.length > 0 && (
+            <span style={{ color: 'var(--muted)' }}>
+              {weights.map(f => `${tr(f.short)} ${fmtSpec(f, specs[f.key])} kg`).join(' · ')}
+            </span>
+          )}
+        </span>
+      )}
+      {empty
+        ? <Plus size={16} color="var(--forest)" style={{ flexShrink: 0 }} />
+        : <Pencil size={14} color="var(--muted)" style={{ flexShrink: 0 }} />}
+    </button>
+  );
+}
+
+function VehicleSpecsModal({ specs, onClose, onSaved }) {
+  const [values, setValues] = useState(() => Object.fromEntries(
+    VEHICLE_SPEC_FIELDS.map(f => [f.key, specs[f.key] != null && specs[f.key] !== '' ? String(specs[f.key]) : ''])
+  ));
+  const [saving, setSaving] = useState(false);
+
+  async function submit(e) {
+    e.preventDefault();
+    const parsed = {};
+    for (const f of VEHICLE_SPEC_FIELDS) {
+      const v = parseSpecNumber(f, values[f.key]);
+      if (v === null) { showToast(tr('specs.invalid'), 'error'); return; }
+      parsed[f.key] = v;
+    }
+    setSaving(true);
+    try {
+      const results = await Promise.all(VEHICLE_SPEC_FIELDS.map(f => fetch(`/api/settings/${f.key}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value: parsed[f.key] === '' ? '' : String(parsed[f.key]) })
+      })));
+      if (results.some(r => !r.ok)) throw new Error(tr('Konnte nicht gespeichert werden.'));
+      showToast(tr('Gespeichert'));
+      onSaved();
+    } catch (err) {
+      showToast(err.message === 'Failed to fetch' ? tr('Server nicht erreichbar.') : err.message, 'error');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const input = (f) => (
+    <Field key={f.key} label={tr(f.label)}>
+      <input type="text" inputMode="decimal" value={values[f.key]}
+        onChange={e => setValues(v => ({ ...v, [f.key]: e.target.value }))} style={{ ...inputStyle, width: '100%', boxSizing: 'border-box' }} />
+    </Field>
+  );
+
+  return (
+    <ModalShell title={tr('specs.title')} onClose={onClose} onSubmit={submit}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 8 }}>
+        {VEHICLE_SPEC_FIELDS.filter(f => f.unit === 'm').map(input)}
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 8 }}>
+        {VEHICLE_SPEC_FIELDS.filter(f => f.unit === 'kg').map(input)}
+      </div>
+      <button type="submit" disabled={saving} style={{ ...primaryButtonStyle, marginTop: 4 }}>
+        {saving ? <Loader2 size={17} className="spin" /> : tr('Speichern')}
+      </button>
+    </ModalShell>
+  );
+}
+
 function VehicleView({ initialTab }) {
   const [events, setEvents] = useState([]);
   const [todos, setTodos] = useState([]);
@@ -3921,17 +4062,21 @@ function VehicleView({ initialTab }) {
   const [editingTodo, setEditingTodo] = useState(null);
   const [search, setSearch] = useState('');
   const [tab, setTab] = useState(initialTab || 'anstehend');
+  const [specs, setSpecs] = useState(null);
+  const [editingSpecs, setEditingSpecs] = useState(false);
 
   const load = useCallback(async (silent = false) => {
     if (!silent) { setLoading(true); setError(''); }
     try {
-      const [eRes, tRes, oRes] = await Promise.all([
-        fetch('/api/vehicle-events'), fetch('/api/vehicle-todos'), fetch('/api/odometer').catch(() => null)
+      const [eRes, tRes, oRes, sRes] = await Promise.all([
+        fetch('/api/vehicle-events'), fetch('/api/vehicle-todos'), fetch('/api/odometer').catch(() => null),
+        fetch('/api/settings').catch(() => null)
       ]);
       if (!eRes.ok || !tRes.ok) throw new Error(tr('Konnte nicht geladen werden.'));
       setEvents(await eRes.json());
       setTodos(await tRes.json());
       if (oRes && oRes.ok) setOdo(await oRes.json());
+      if (sRes && sRes.ok) setSpecs(await sRes.json());
     } catch (e) {
       if (!silent) setError(e.message === 'Failed to fetch' ? tr('Server nicht erreichbar.') : e.message);
     } finally {
@@ -4004,6 +4149,12 @@ function VehicleView({ initialTab }) {
             ) : <><SkeletonBlock w="50%" h={20} /><SkeletonBlock h={6} r={3} /></>}
           </button>
         </div>
+
+        {specs && <VehicleSpecsBar specs={specs} onEdit={() => setEditingSpecs(true)} />}
+        {editingSpecs && specs && (
+          <VehicleSpecsModal specs={specs} onClose={() => setEditingSpecs(false)}
+            onSaved={() => { setEditingSpecs(false); load(true); }} />
+        )}
 
         <Segmented value={tab} onChange={setTab} options={[
           { key: 'anstehend', label: todos.length ? tr('Anstehend {length}', { length: todos.length }) : tr('Anstehend') },
