@@ -470,13 +470,43 @@ function holidayLevel(index, iso) {
 }
 
 // Kurztext, wer an einem Tag Ferien hat, z.B. "DE: BY, BW · CH: 12/26".
+function countryName(code) {
+  try {
+    const name = new Intl.DisplayNames([lang()], { type: 'region' }).of(code);
+    if (name) return name;
+  } catch { /* aeltere Browser */ }
+  return code;
+}
+
+// Bezeichnung der Regionen eines Landes in der Mehrzahl (Kantone, Bundeslaender, sonst Regionen).
+function regionWord(code) {
+  if (code === 'CH') return tr('Kantonen');
+  if (code === 'DE' || code === 'AT') return tr('Bundesländern');
+  return tr('Regionen');
+}
+
+// Lesbarer Text, wer an einem Tag Schulferien hat, z.B. "7 von 26 Kantonen (Schweiz) ·
+// BY, BW (Deutschland)". Bis drei Regionen werden mit Kuerzel genannt, sonst gezaehlt.
 function schoolHolidaySummary(info) {
   if (!info) return '';
   return Object.entries(info.school).map(([c, v]) => {
-    if (v.all) return tr('{c}: alle', { c });
-    if (v.regions.length <= 4) return `${c}: ${v.regions.map(r => r.split('-')[1] || r).join(', ')}`;
-    return `${c}: ${v.regions.length}/${v.total}`;
+    const land = countryName(c);
+    if (v.all) return tr('ganz {land}', { land });
+    if (v.regions.length <= 3) return `${v.regions.map(r => r.split('-')[1] || r).join(', ')} (${land})`;
+    return tr('{n} von {total} {regionen} ({land})', { n: v.regions.length, total: v.total, regionen: regionWord(c), land });
   }).join(' · ');
+}
+
+// Trips, deren Naechte sich mit dem Zeitraum von (Anreise) bis bis (Abreise) ueberschneiden.
+// Abreise- und Anreisetag duerfen zusammenfallen.
+function overlappingTrips(trips, von, bis, excludeId) {
+  if (!von) return [];
+  const end = bis && bis > von ? bis : addDaysISO(von, 1);
+  return (trips || []).filter(t => {
+    if (!t.datum_von || t.id === excludeId) return false;
+    const tEnd = t.datum_bis && t.datum_bis > t.datum_von ? t.datum_bis : addDaysISO(t.datum_von, 1);
+    return von < tEnd && t.datum_von < end;
+  });
 }
 
 function publicHolidaySummary(info) {
@@ -3008,7 +3038,7 @@ function TripStatusChips({ value, onChange }) {
   );
 }
 
-function TripForm({ existing, prefill, onSaved, onCancel }) {
+function TripForm({ existing, prefill, trips, onSaved, onCancel }) {
   const [titel, setTitel] = useState(existing?.titel || prefill?.titel || '');
   const [ort, setOrt] = useState(existing?.ort || prefill?.ort || '');
   const [datumVon, setDatumVon] = useState(existing?.datum_von || prefill?.datum_von || todayISO());
@@ -3018,8 +3048,11 @@ function TripForm({ existing, prefill, onSaved, onCancel }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
+  const overlaps = overlappingTrips(trips, datumVon, datumBis, existing?.id);
+
   async function doSave() {
     if (!titel.trim()) { setError(tr('Titel ist ein Pflichtfeld.')); return null; }
+    if (overlaps.length) return null;
     setError('');
     const url = existing ? `/api/trips/${existing.id}` : '/api/trips';
     const method = existing ? 'PUT' : 'POST';
@@ -3054,8 +3087,8 @@ function TripForm({ existing, prefill, onSaved, onCancel }) {
     if (!autosaveMounted.current) { autosaveMounted.current = true; return; }
     const timer = setTimeout(async () => {
       try {
-        await doSave();
-        triggerSaved();
+        const saved = await doSave();
+        if (saved) triggerSaved();
       } catch (err) {
         showToast(err.message === 'Failed to fetch' ? tr('Server nicht erreichbar.') : err.message, 'error');
       }
@@ -3089,6 +3122,11 @@ function TripForm({ existing, prefill, onSaved, onCancel }) {
           <input value={ort} onChange={e => setOrt(e.target.value)} style={inputStyle} placeholder={tr('z.B. Sempach, LU')} />
         </Field>
         <CalendarRangePicker datumVon={datumVon} setDatumVon={setDatumVon} datumBis={datumBis} setDatumBis={setDatumBis} />
+        {overlaps.length > 0 && (
+          <div role="alert" style={{ fontSize: 14, lineHeight: 1.4, borderRadius: 10, padding: '10px 12px', background: '#FBE9E4', border: '1px solid #E3AE9E', color: '#6E2A16' }}>
+            {tr('In diesem Zeitraum ist schon {titel} eingeplant. Bitte andere Daten wählen.', { titel: overlaps.map(t => t.titel).join(', ') })}
+          </div>
+        )}
         <Field label={tr('Status')}>
           <TripStatusChips value={status} onChange={setStatus} />
         </Field>
@@ -3102,7 +3140,7 @@ function TripForm({ existing, prefill, onSaved, onCancel }) {
             {tr('Fertig')}
           </button>
         ) : (
-          <button type="submit" disabled={saving} style={{ ...primaryButtonStyle, marginTop: 4, marginBottom: 24 }}>
+          <button type="submit" disabled={saving || overlaps.length > 0} style={{ ...primaryButtonStyle, marginTop: 4, marginBottom: 24, opacity: overlaps.length ? 0.6 : 1 }}>
             {saving ? <Loader2 size={17} className="spin" /> : tr('Speichern')}
           </button>
         )}
@@ -3609,6 +3647,7 @@ function PlanModal({ year, month, startHint, wish, trips, holidays: initialHolid
 
   const departure = arrival ? addDaysISO(arrival, nights) : null;
   const lastNight = arrival ? addDaysISO(arrival, nights - 1) : null;
+  const overlaps = arrival ? overlappingTrips(trips, arrival, departure) : [];
   const cells = buildMonthGrid(view.year, view.month);
   const monthTitle = new Date(view.year, view.month, 1).toLocaleDateString(numLocale(), { month: 'long', year: 'numeric' });
   const minN = wish?.min_naechte || 0;
@@ -3623,9 +3662,7 @@ function PlanModal({ year, month, startHint, wish, trips, holidays: initialHolid
   // Hinweise zum gewaehlten Zeitraum.
   const hints = [];
   if (arrival) {
-    const overlapping = new Map();
-    eachDayISO(arrival, lastNight, (iso) => { const t = occupied.get(iso); if (t) overlapping.set(t.id, t); });
-    overlapping.forEach(t => hints.push({ warn: true, text: tr('Überschneidet sich mit {titel}.', { titel: t.titel }) }));
+    overlaps.forEach(t => hints.push({ block: true, text: tr('In diesem Zeitraum ist schon {titel} eingeplant. Bitte andere Daten wählen.', { titel: t.titel }) }));
     if (minN && nights < minN) hints.push({ warn: true, text: tr('Weniger als die Mindestanzahl von {n} Nächten.', { n: minN }) });
     const pub = [];
     eachDayISO(arrival, departure, (iso) => {
@@ -3641,7 +3678,7 @@ function PlanModal({ year, month, startHint, wish, trips, holidays: initialHolid
   }
 
   async function save() {
-    if (!arrival || !titel.trim()) return;
+    if (!arrival || !titel.trim() || overlaps.length) return;
     setSaving(true);
     try {
       const notizen = wish ? (wish.link ? [wish.notizen, tr('Mehr Infos: {link}', { link: wish.link })].filter(Boolean).join('\n\n') : (wish.notizen || '')) : '';
@@ -3702,9 +3739,9 @@ function PlanModal({ year, month, startHint, wish, trips, holidays: initialHolid
                 : isConfirmed(trip) ? { background: '#E6EDE2', color: '#7A877C', border: '1.5px solid #E6EDE2' }
                 : { background: '#FFFFFF', color: '#7A877C', border: `1.5px dashed ${trip.status === 'idee' ? '#B5C4B6' : '#7E9A82'}` };
               return (
-                <button key={i} disabled={past} onClick={() => setArrival(iso)} aria-label={iso} style={{
+                <button key={i} disabled={past || Boolean(trip)} onClick={() => setArrival(iso)} aria-label={iso} style={{
                   aspectRatio: '1', borderRadius: 8, position: 'relative', padding: 0, fontSize: 13, fontFamily: 'var(--font-body)',
-                  cursor: past ? 'default' : 'pointer', opacity: past ? 0.35 : 1, overflow: 'hidden',
+                  cursor: past || trip ? 'default' : 'pointer', opacity: past ? 0.35 : 1, overflow: 'hidden',
                   fontWeight: info?.publicHolidays?.length ? 700 : 400,
                   background: inRange ? 'var(--forest)' : isDeparture ? '#C9DBC6' : trip ? tripStyle.background : 'transparent',
                   color: inRange ? '#FFFFFF' : trip ? tripStyle.color : 'var(--text)',
@@ -3739,9 +3776,11 @@ function PlanModal({ year, month, startHint, wish, trips, holidays: initialHolid
             {hints.length > 0 && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                 {hints.map((h, i) => (
-                  <div key={i} style={{
+                  <div key={i} role={h.block ? 'alert' : undefined} style={{
                     fontSize: 13, lineHeight: 1.4, borderRadius: 10, padding: '8px 10px',
-                    background: h.warn ? '#FBEFD0' : 'var(--card-alt)', color: h.warn ? '#6B5310' : 'var(--forest)'
+                    background: h.block ? '#FBE9E4' : h.warn ? '#FBEFD0' : 'var(--card-alt)',
+                    color: h.block ? '#6E2A16' : h.warn ? '#6B5310' : 'var(--forest)',
+                    border: h.block ? '1px solid #E3AE9E' : 'none'
                   }}>{h.text}</div>
                 ))}
               </div>
@@ -3757,7 +3796,7 @@ function PlanModal({ year, month, startHint, wish, trips, holidays: initialHolid
             <Field label={tr('Status')}>
               <TripStatusChips value={status} onChange={setStatus} />
             </Field>
-            <button onClick={save} disabled={saving || !titel.trim()} style={{ ...primaryButtonStyle, opacity: titel.trim() ? 1 : 0.6 }}>
+            <button onClick={save} disabled={saving || !titel.trim() || overlaps.length > 0} style={{ ...primaryButtonStyle, opacity: titel.trim() && !overlaps.length ? 1 : 0.6 }}>
               {saving ? <Loader2 size={17} className="spin" /> : tr('Einplanen')}
             </button>
           </>
@@ -7528,11 +7567,11 @@ export default function CampingTagebuch() {
       )}
 
       {view.name === 'addTrip' && (
-        <TripForm prefill={view.prefill} onSaved={handleSavedTrip} onCancel={() => navigate({ name: 'trips' })} />
+        <TripForm prefill={view.prefill} trips={trips} onSaved={handleSavedTrip} onCancel={() => navigate({ name: 'trips' })} />
       )}
 
       {view.name === 'editTrip' && (
-        <TripForm existing={view.trip} onSaved={handleSavedTrip}
+        <TripForm existing={view.trip} trips={trips} onSaved={handleSavedTrip}
           onCancel={() => navigate({ name: 'tripDetail', tripId: view.trip.id })} />
       )}
       </div>

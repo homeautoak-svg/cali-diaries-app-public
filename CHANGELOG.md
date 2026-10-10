@@ -14,6 +14,10 @@
   server and cached per country and year for 30 days. Countries are configurable in the
   settings (default CH, DE, AT). Tap a day in the calendar to see who is on holiday.
 - Wish list: new field for the minimum number of nights.
+- Trips can no longer overlap: occupied days cannot be picked in the season planner, and saving
+  is blocked in the planner and the trip form while the dates overlap another trip (departure
+  and arrival on the same day are fine).
+- School holidays are written out ("7 of 26 cantons (Switzerland)", "all of Austria").
 - Service worker cache raised to v14.
 
 ## 1.1.0 (09.10.2026)
