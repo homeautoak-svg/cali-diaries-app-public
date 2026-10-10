@@ -99,6 +99,8 @@ db.exec(`
     datum_von TEXT,
     datum_bis TEXT,
     notizen TEXT,
+    status TEXT NOT NULL DEFAULT 'bestaetigt',
+    buchungsfenster_datum TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
@@ -214,11 +216,23 @@ db.exec(`
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
+  -- Schul- und Feiertage pro Land, Jahr und Sprache (OpenHolidays API). Die Daten aendern sich
+  -- selten, deshalb wird nur nachgeladen, wenn der Eintrag aelter als 30 Tage ist.
+  CREATE TABLE IF NOT EXISTS holiday_cache (
+    country TEXT NOT NULL,
+    year INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    data_json TEXT NOT NULL,
+    fetched_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (country, year, kind)
+  );
+
   CREATE TABLE IF NOT EXISTS wishlist_campsites (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
     ort TEXT,
     buchungsfenster_datum TEXT,
+    min_naechte INTEGER,
     link TEXT,
     notizen TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -282,6 +296,24 @@ if (!entryColumns.includes('kosten_aktivitaeten')) db.exec('ALTER TABLE entries 
 
 const lessonColumns = db.prepare("PRAGMA table_info(lessons)").all().map(c => c.name);
 if (!lessonColumns.includes('erledigt_am')) db.exec('ALTER TABLE lessons ADD COLUMN erledigt_am TEXT');
+
+// Migration v4.12: Status fuer Trips (Idee, angefragt, bestaetigt) und Buchungsfenster aus der
+// Wunschliste. Bestehende Trips gelten als bestaetigt, damit sich an ihnen nichts aendert.
+const tripColumns = db.prepare("PRAGMA table_info(trips)").all().map(c => c.name);
+if (!tripColumns.includes('status')) db.exec("ALTER TABLE trips ADD COLUMN status TEXT NOT NULL DEFAULT 'bestaetigt'");
+if (!tripColumns.includes('buchungsfenster_datum')) db.exec('ALTER TABLE trips ADD COLUMN buchungsfenster_datum TEXT');
+const wishlistColumns = db.prepare("PRAGMA table_info(wishlist_campsites)").all().map(c => c.name);
+if (!wishlistColumns.includes('min_naechte')) db.exec('ALTER TABLE wishlist_campsites ADD COLUMN min_naechte INTEGER');
+
+const TRIP_STATUSES = ['idee', 'angefragt', 'bestaetigt'];
+function validTripStatus(v, fallback) {
+  return TRIP_STATUSES.includes(v) ? v : fallback;
+}
+function validMinNaechte(v) {
+  if (v === undefined || v === null || v === '') return null;
+  const n = Math.round(Number(v));
+  return Number.isFinite(n) && n > 0 && n < 100 ? n : null;
+}
 
 const mealColumns = db.prepare("PRAGMA table_info(trip_meals)").all().map(c => c.name);
 if (!mealColumns.includes('datum')) db.exec('ALTER TABLE trip_meals ADD COLUMN datum TEXT');
@@ -1279,7 +1311,7 @@ app.get('/api/trips.ics', (req, res) => {
       `DTSTAMP:${now}`,
       `DTSTART;VALUE=DATE:${icsDate(start)}`,
       `DTEND;VALUE=DATE:${icsDate(endExclusive)}`,
-      `SUMMARY:${icsEscape(t.titel)}`,
+      `SUMMARY:${icsEscape(t.status && t.status !== 'bestaetigt' ? `${t.titel} (${t.status === 'idee' ? 'Idee' : 'angefragt'})` : t.titel)}`,
       t.ort ? `LOCATION:${icsEscape(t.ort)}` : null,
       t.notizen ? `DESCRIPTION:${icsEscape(t.notizen)}` : null,
       'END:VEVENT'
@@ -1469,11 +1501,12 @@ app.get('/api/trips/:id', (req, res) => {
 });
 
 app.post('/api/trips', (req, res) => {
-  const { titel, ort, datum_von, datum_bis, notizen } = req.body || {};
+  const { titel, ort, datum_von, datum_bis, notizen, status, buchungsfenster_datum } = req.body || {};
   if (!titel || !titel.trim()) return res.status(400).json({ error: 'Titel ist ein Pflichtfeld.' });
   const info = db.prepare(`
-    INSERT INTO trips (titel, ort, datum_von, datum_bis, notizen) VALUES (?, ?, ?, ?, ?)
-  `).run(titel.trim(), ort || null, datum_von || null, datum_bis || null, notizen || null);
+    INSERT INTO trips (titel, ort, datum_von, datum_bis, notizen, status, buchungsfenster_datum) VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(titel.trim(), ort || null, datum_von || null, datum_bis || null, notizen || null,
+    validTripStatus(status, 'bestaetigt'), buchungsfenster_datum || null);
   const tripId = info.lastInsertRowid;
 
   const packingTemplates = db.prepare("SELECT text FROM templates WHERE category = 'packliste' ORDER BY id").all();
@@ -1493,7 +1526,8 @@ app.put('/api/trips/:id', (req, res) => {
   db.prepare(`
     UPDATE trips SET
       titel = @titel, ort = @ort, datum_von = @datum_von, datum_bis = @datum_bis,
-      notizen = @notizen, updated_at = datetime('now')
+      notizen = @notizen, status = @status, buchungsfenster_datum = @buchungsfenster_datum,
+      updated_at = datetime('now')
     WHERE id = @id
   `).run({
     id: req.params.id,
@@ -1501,7 +1535,9 @@ app.put('/api/trips/:id', (req, res) => {
     ort: b.ort ?? existing.ort,
     datum_von: b.datum_von ?? existing.datum_von,
     datum_bis: b.datum_bis ?? existing.datum_bis,
-    notizen: b.notizen ?? existing.notizen
+    notizen: b.notizen ?? existing.notizen,
+    status: validTripStatus(b.status, existing.status || 'bestaetigt'),
+    buchungsfenster_datum: b.buchungsfenster_datum !== undefined ? (b.buchungsfenster_datum || null) : existing.buchungsfenster_datum
   });
   const row = db.prepare('SELECT * FROM trips WHERE id = ?').get(req.params.id);
   res.json(attachTripDetails(row));
@@ -1524,12 +1560,12 @@ app.get('/api/wishlist', (req, res) => {
 });
 
 app.post('/api/wishlist', (req, res) => {
-  const { name, ort, buchungsfenster_datum, link, notizen } = req.body || {};
+  const { name, ort, buchungsfenster_datum, min_naechte, link, notizen } = req.body || {};
   if (!name || !name.trim()) return res.status(400).json({ error: 'Name ist ein Pflichtfeld.' });
   const info = db.prepare(`
-    INSERT INTO wishlist_campsites (name, ort, buchungsfenster_datum, link, notizen)
-    VALUES (?, ?, ?, ?, ?)
-  `).run(name.trim(), ort || null, buchungsfenster_datum || null, link || null, notizen || null);
+    INSERT INTO wishlist_campsites (name, ort, buchungsfenster_datum, min_naechte, link, notizen)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(name.trim(), ort || null, buchungsfenster_datum || null, validMinNaechte(min_naechte), link || null, notizen || null);
   const row = db.prepare('SELECT * FROM wishlist_campsites WHERE id = ?').get(info.lastInsertRowid);
   res.status(201).json(row);
 });
@@ -1537,11 +1573,11 @@ app.post('/api/wishlist', (req, res) => {
 app.put('/api/wishlist/:id', (req, res) => {
   const existing = db.prepare('SELECT * FROM wishlist_campsites WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Eintrag nicht gefunden.' });
-  const { name, ort, buchungsfenster_datum, link, notizen } = req.body || {};
+  const { name, ort, buchungsfenster_datum, min_naechte, link, notizen } = req.body || {};
   if (name !== undefined && !name.trim()) return res.status(400).json({ error: 'Name ist ein Pflichtfeld.' });
   db.prepare(`
     UPDATE wishlist_campsites SET
-      name = @name, ort = @ort, buchungsfenster_datum = @buchungsfenster_datum,
+      name = @name, ort = @ort, buchungsfenster_datum = @buchungsfenster_datum, min_naechte = @min_naechte,
       link = @link, notizen = @notizen, updated_at = datetime('now')
     WHERE id = @id
   `).run({
@@ -1549,6 +1585,7 @@ app.put('/api/wishlist/:id', (req, res) => {
     name: name !== undefined ? name.trim() : existing.name,
     ort: ort !== undefined ? (ort || null) : existing.ort,
     buchungsfenster_datum: buchungsfenster_datum !== undefined ? (buchungsfenster_datum || null) : existing.buchungsfenster_datum,
+    min_naechte: min_naechte !== undefined ? validMinNaechte(min_naechte) : existing.min_naechte,
     link: link !== undefined ? (link || null) : existing.link,
     notizen: notizen !== undefined ? (notizen || null) : existing.notizen
   });
@@ -1822,6 +1859,93 @@ app.put('/api/home-location', async (req, res) => {
     console.error('Startort konnte nicht gesetzt werden:', e.message);
     res.status(502).json({ error: 'Ortssuche fehlgeschlagen. Server ohne Internet?' });
   }
+});
+
+// --- Schul- und Feiertage (OpenHolidays API, openholidaysapi.org) ---
+// Laender aus der Einstellung holiday_countries (z.B. "CH,DE,AT"), sonst CH, DE und AT. Pro Land,
+// Jahr und Sprache wird die Antwort zwischengespeichert; ist der Dienst nicht erreichbar, werden
+// die zuletzt gespeicherten Daten verwendet.
+const HOLIDAY_DEFAULT_COUNTRIES = ['CH', 'DE', 'AT'];
+const HOLIDAY_MAX_AGE_DAYS = 30;
+
+function holidayCountries() {
+  const raw = getSetting('holiday_countries');
+  if (raw === null || raw === undefined) return HOLIDAY_DEFAULT_COUNTRIES;
+  return raw.split(',').map(c => c.trim().toUpperCase()).filter(c => /^[A-Z]{2}$/.test(c));
+}
+
+function holidayText(names, lang) {
+  if (!Array.isArray(names) || names.length === 0) return '';
+  const hit = names.find(n => (n.language || '').toUpperCase() === lang) || names[0];
+  return hit.text || '';
+}
+
+// Kanton bzw. Bundesland aus einem Unterteilungs-Code: "CH-AI-AP" -> "CH-AI", "DE-BY" -> "DE-BY".
+function topRegion(code) {
+  const parts = String(code || '').split('-');
+  return parts.length >= 2 ? `${parts[0]}-${parts[1]}` : String(code || '');
+}
+
+async function fetchHolidayKind(country, year, kind, lang) {
+  const cacheKind = `${kind}-${lang}`;
+  const cached = db.prepare('SELECT data_json, fetched_at FROM holiday_cache WHERE country = ? AND year = ? AND kind = ?')
+    .get(country, year, cacheKind);
+  const fresh = cached && (Date.now() - new Date(cached.fetched_at.replace(' ', 'T') + 'Z').getTime()) < HOLIDAY_MAX_AGE_DAYS * 86400000;
+  if (fresh) return JSON.parse(cached.data_json);
+  const base = 'https://openholidaysapi.org';
+  const url = kind === 'subdivisions'
+    ? `${base}/Subdivisions?countryIsoCode=${country}&languageIsoCode=${lang}`
+    : `${base}/${kind === 'school' ? 'SchoolHolidays' : 'PublicHolidays'}?countryIsoCode=${country}&languageIsoCode=${lang}&validFrom=${year}-01-01&validTo=${year}-12-31`;
+  try {
+    const r = await fetch(url, { headers: { accept: 'application/json', 'User-Agent': 'camping-diary-app' }, signal: AbortSignal.timeout(8000) });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const data = await r.json();
+    if (!Array.isArray(data)) throw new Error('unerwartetes Format');
+    db.prepare(`INSERT INTO holiday_cache (country, year, kind, data_json, fetched_at) VALUES (?, ?, ?, ?, datetime('now'))
+      ON CONFLICT(country, year, kind) DO UPDATE SET data_json = excluded.data_json, fetched_at = excluded.fetched_at`)
+      .run(country, year, cacheKind, JSON.stringify(data));
+    return data;
+  } catch (e) {
+    console.error(`Ferien ${country} ${year} ${kind} nicht geladen:`, e.message);
+    return cached ? JSON.parse(cached.data_json) : null;
+  }
+}
+
+app.get('/api/holidays', async (req, res) => {
+  const year = Number(req.query.year);
+  if (!Number.isInteger(year) || year < 2020 || year > 2100) return res.status(400).json({ error: 'Ungueltiger Wert.' });
+  const lang = getSetting('language') === 'en' ? 'EN' : 'DE';
+  const countries = holidayCountries();
+  const result = { year, countries: [], regionTotals: {}, school: [], public: [], missing: [] };
+  for (const country of countries) {
+    const [school, pub, subs] = await Promise.all([
+      fetchHolidayKind(country, year, 'school', lang),
+      fetchHolidayKind(country, year, 'public', lang),
+      fetchHolidayKind(country, 0, 'subdivisions', lang)
+    ]);
+    if (!school && !pub) { result.missing.push(country); continue; }
+    result.countries.push(country);
+    // Anzahl Kantone bzw. Bundeslaender; ohne Unterteilungsliste die in den Ferien vorkommenden.
+    const topCodes = new Set((subs || []).map(s => topRegion(s.code)).filter(Boolean));
+    if (topCodes.size === 0) (school || []).forEach(h => (h.subdivisions || []).forEach(s => topCodes.add(topRegion(s.code))));
+    result.regionTotals[country] = topCodes.size || 1;
+    for (const h of school || []) {
+      const regions = Array.from(new Set((h.subdivisions || []).map(s => topRegion(s.code)).filter(Boolean)));
+      result.school.push({
+        country, start: h.startDate, end: h.endDate, name: holidayText(h.name, lang),
+        nationwide: Boolean(h.nationwide), regions
+      });
+    }
+    for (const h of pub || []) {
+      if (h.regionalScope === 'Local') continue;
+      const regions = Array.from(new Set((h.subdivisions || []).map(s => topRegion(s.code)).filter(Boolean)));
+      result.public.push({
+        country, start: h.startDate, end: h.endDate, name: holidayText(h.name, lang),
+        nationwide: Boolean(h.nationwide), regions
+      });
+    }
+  }
+  res.json(result);
 });
 
 // Welche optionalen Module auf diesem Server eingerichtet sind; die App blendet den Rest aus.

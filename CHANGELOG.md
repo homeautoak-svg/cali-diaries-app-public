@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.2.0 (10.10.2026)
+
+- Season planner: new "Season" view under Trips with one timeline per month, all trips by
+  status and a school holiday band. Pick a place from the wish list to see free gaps with at
+  least its minimum nights (green: quiet, yellow: busy). Tap a gap or month, choose the arrival
+  day and adjust the nights; hints show overlaps, too few nights, public and school holidays,
+  the booking window and the driving distance.
+- Trip status: idea, requested or confirmed. Unconfirmed trips are shown dashed and never
+  become "on the road" or "no report yet". Existing trips are migrated as confirmed. Trips keep
+  the booking window from the wish list, and the booking reminder on the overview covers them.
+- School and public holidays from the OpenHolidays API (openholidaysapi.org), fetched by the
+  server and cached per country and year for 30 days. Countries are configurable in the
+  settings (default CH, DE, AT). Tap a day in the calendar to see who is on holiday.
+- Wish list: new field for the minimum number of nights.
+- Trips can no longer overlap: occupied days cannot be picked in the season planner, and saving
+  is blocked in the planner and the trip form while the dates overlap another trip (departure
+  and arrival on the same day are fine).
+- School holiday hints show only how busy it is ("Busy: peak holiday season in CH, DE and AT")
+  instead of listing cantons and states.
+- Service worker cache raised to v14.
+
 ## 1.1.0 (09.10.2026)
 
 - Vehicle: new info line below odometer and mileage budget, always visible. It shows length,

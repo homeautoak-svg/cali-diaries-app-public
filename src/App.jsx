@@ -77,7 +77,7 @@ function fmtAmount(n) {
 // Sie werden beim Start einmal vom Server geladen (loadAppConfig im Hauptbaustein) und beim
 // Rendern gelesen, damit nicht jede Komponente sie einzeln durchreichen muss.
 const APP_CONFIG = {
-  currency: '', foreignCurrency: '', vehicleName: '', homeOrt: '', homeCountry: '', language: '',
+  currency: '', foreignCurrency: '', vehicleName: '', homeOrt: '', homeCountry: '', language: '', holidayCountries: null,
   features: { blog: false, tls: false }
 };
 const CURRENCY_CHOICES = ['CHF', 'EUR', 'USD', 'GBP', 'SEK', 'NOK', 'DKK', 'PLN', 'CZK', 'HUF', 'CAD', 'AUD', 'NZD'];
@@ -94,6 +94,7 @@ function applySettingsToConfig(s) {
   APP_CONFIG.homeOrt = s.home_ort || '';
   APP_CONFIG.homeCountry = s.home_country_code || '';
   APP_CONFIG.language = s.language || '';
+  APP_CONFIG.holidayCountries = s.holiday_countries ?? null;
 }
 function setupIncomplete() {
   return !APP_CONFIG.currency || !APP_CONFIG.homeOrt;
@@ -255,10 +256,24 @@ function nightsLabel(von, bis) {
   return n === 1 ? tr('1 Nacht') : tr('{n} Nächte', { n });
 }
 
-// Status eines geplanten Trips relativ zu heute: geplant, unterwegs oder vorbei.
+// Planungsstatus eines Trips (seit v4.12): Idee, angefragt oder bestaetigt. Trips ohne Status
+// stammen aus aelteren Versionen und gelten als bestaetigt.
+const TRIP_STATUSES = ['idee', 'angefragt', 'bestaetigt'];
+function tripStatusLabel(status) {
+  if (status === 'idee') return tr('Idee');
+  if (status === 'angefragt') return tr('Angefragt');
+  return tr('Bestätigt');
+}
+function isConfirmed(trip) {
+  return !trip.status || trip.status === 'bestaetigt';
+}
+
+// Status eines geplanten Trips relativ zu heute: geplant, unterwegs oder vorbei. Nicht
+// bestaetigte Trips werden nie "unterwegs" oder "abgeschlossen", sie bleiben bei den geplanten.
 function tripPhase(trip, today = todayISO()) {
   const end = trip.datum_bis || trip.datum_von;
   if (!trip.datum_von) return { phase: 'geplant', label: tr('Ohne Datum') };
+  if (!isConfirmed(trip) && trip.datum_von <= today) return { phase: 'geplant', unconfirmed: true, label: tr('Nicht bestätigt') };
   if (trip.datum_von > today) {
     const d = daysBetween(today, trip.datum_von);
     return { phase: 'geplant', inDays: d, label: d === 1 ? tr('Morgen') : tr('In {d} Tagen', { d: d }) };
@@ -348,6 +363,142 @@ function buildMonthGrid(year, month) {
   for (let d = 1; d <= daysInMonth; d++) cells.push(d);
   while (cells.length % 7 !== 0) cells.push(null);
   return cells;
+}
+
+// --- Schul- und Feiertage (seit v4.12) ---
+// Der Server liefert pro Jahr die Ferien der eingestellten Laender (OpenHolidays API). Daraus
+// wird pro Tag eine Stufe 0 bis 3 berechnet: Anteil der Kantone bzw. Bundeslaender mit Ferien,
+// gewichtet nach Einwohnern des Landes (Mio.), damit ein Ferienbeginn in Deutschland staerker
+// zaehlt als in Liechtenstein; das Land des Startorts zaehlt mindestens ein Drittel. Das ergibt
+// eine grobe Schaetzung, wie voll Campingplaetze sind.
+const HOLIDAY_COUNTRY_CHOICES = ['CH', 'DE', 'AT', 'FR', 'IT', 'NL', 'BE', 'LU', 'LI', 'CZ', 'PL', 'ES', 'PT', 'SI', 'HR'];
+const COUNTRY_POPULATION_M = { CH: 9, DE: 84, AT: 9, FR: 68, IT: 59, NL: 18, BE: 12, LU: 0.7, LI: 0.04, CZ: 11, PL: 37, ES: 48, PT: 10, SI: 2, HR: 4 };
+const HOLIDAY_LEVEL_COLORS = ['transparent', '#F3E2A6', '#E8C35B', '#C98A2B'];
+const holidayCache = new Map();
+let holidayCacheVersion = 0;
+
+function invalidateHolidayCache() {
+  holidayCache.clear();
+  holidayCacheVersion += 1;
+}
+
+function fetchHolidayYear(year) {
+  const key = `${holidayCacheVersion}-${year}`;
+  if (!holidayCache.has(key)) {
+    holidayCache.set(key, fetch(`/api/holidays?year=${year}`)
+      .then(r => (r.ok ? r.json() : null))
+      .then(data => (data ? buildHolidayIndex(data) : null))
+      .catch(() => null));
+  }
+  return holidayCache.get(key);
+}
+
+// Ferien der angegebenen Jahre laden; Ergebnis: Map iso-Datum -> Tagesinfo (nur Tage mit Ferien
+// oder Feiertag). null, solange noch nichts geladen ist.
+function useHolidays(years) {
+  const yearsKey = Array.from(new Set(years)).sort().join(',');
+  const [index, setIndex] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    const list = yearsKey ? yearsKey.split(',').map(Number) : [];
+    Promise.all(list.map(fetchHolidayYear)).then(results => {
+      if (cancelled) return;
+      const merged = new Map();
+      results.forEach(r => { if (r) r.forEach((v, k) => merged.set(k, v)); });
+      setIndex(merged);
+    });
+    return () => { cancelled = true; };
+  }, [yearsKey]);
+  return index;
+}
+
+function eachDayISO(start, end, fn) {
+  if (!start) return;
+  let d = start;
+  const last = end || start;
+  let guard = 0;
+  while (d <= last && guard < 400) { fn(d); d = addDaysISO(d, 1); guard++; }
+}
+
+function buildHolidayIndex(data) {
+  const index = new Map();
+  const get = (iso) => {
+    if (!index.has(iso)) index.set(iso, { level: 0, score: 0, school: {}, publicHolidays: [] });
+    return index.get(iso);
+  };
+  for (const h of data.school || []) {
+    eachDayISO(h.start, h.end, (iso) => {
+      const info = get(iso);
+      const set = info.school[h.country] || (info.school[h.country] = new Set());
+      if (h.nationwide || !h.regions?.length) set.add('*');
+      else h.regions.forEach(r => set.add(r));
+    });
+  }
+  for (const h of data.public || []) {
+    eachDayISO(h.start, h.end, (iso) => {
+      const info = get(iso);
+      const existing = info.publicHolidays.find(p => p.name === h.name);
+      if (existing) { if (!existing.countries.includes(h.country)) existing.countries.push(h.country); }
+      else info.publicHolidays.push({ name: h.name, countries: [h.country], nationwide: h.nationwide });
+    });
+  }
+  // Gewicht pro Land nach Einwohnern; das Land des Startorts zaehlt mindestens ein Drittel, weil
+  // dessen Ferien die Plaetze in der Naehe am staerksten fuellen.
+  const countries = data.countries || [];
+  const home = (APP_CONFIG.homeCountry || '').toUpperCase();
+  const popOf = (c) => COUNTRY_POPULATION_M[c] || 5;
+  const othersSum = countries.filter(c => c !== home).reduce((s, c) => s + popOf(c), 0);
+  const weightOf = (c) => (c === home && countries.length > 1 ? Math.max(popOf(c), othersSum / 2) : popOf(c));
+  const weightSum = countries.reduce((s, c) => s + weightOf(c), 0) || 1;
+  index.forEach(info => {
+    let score = 0;
+    for (const c of Object.keys(info.school)) {
+      const set = info.school[c];
+      const total = data.regionTotals?.[c] || 1;
+      const share = set.has('*') ? 1 : Math.min(1, set.size / total);
+      score += share * weightOf(c);
+      info.school[c] = { all: set.has('*') || set.size >= total, regions: Array.from(set).filter(r => r !== '*'), total };
+    }
+    info.score = score / weightSum;
+    info.level = info.score === 0 ? 0 : info.score < 0.15 ? 1 : info.score < 0.45 ? 2 : 3;
+  });
+  return index;
+}
+
+function holidayLevel(index, iso) {
+  return index?.get(iso)?.level || 0;
+}
+
+// Kurztext, wer an einem Tag Ferien hat, z.B. "DE: BY, BW · CH: 12/26".
+function joinWithAnd(list) {
+  if (list.length <= 1) return list.join('');
+  return `${list.slice(0, -1).join(', ')} ${tr('und')} ${list[list.length - 1]}`;
+}
+
+// Kurzer Satz zur Auslastung eines Tages anhand der Schulferien, ohne Regionen-Details.
+function holidayLoadText(info) {
+  if (!info || !info.level) return '';
+  const countries = joinWithAnd(Object.keys(info.school));
+  if (info.level >= 3) return tr('Viel los: Hauptferienzeit in {countries}.', { countries });
+  if (info.level === 2) return tr('Eher voll: Schulferien in {countries}.', { countries });
+  return tr('Ruhig: nur vereinzelt Schulferien.');
+}
+
+// Trips, deren Naechte sich mit dem Zeitraum von (Anreise) bis bis (Abreise) ueberschneiden.
+// Abreise- und Anreisetag duerfen zusammenfallen.
+function overlappingTrips(trips, von, bis, excludeId) {
+  if (!von) return [];
+  const end = bis && bis > von ? bis : addDaysISO(von, 1);
+  return (trips || []).filter(t => {
+    if (!t.datum_von || t.id === excludeId) return false;
+    const tEnd = t.datum_bis && t.datum_bis > t.datum_von ? t.datum_bis : addDaysISO(t.datum_von, 1);
+    return von < tEnd && t.datum_von < end;
+  });
+}
+
+function publicHolidaySummary(info) {
+  if (!info?.publicHolidays?.length) return '';
+  return info.publicHolidays.map(p => `${p.name} (${p.countries.join(', ')})`).join(' · ');
 }
 
 // --- Eigene Toast- und Bestaetigungs-Dialoge statt Browser-alert()/confirm() ---
@@ -1282,14 +1433,18 @@ function HomeScreen({ trips, entries, wishlist, loading, slow, onRetry, certWarn
 
   const today = todayISO();
   const activeTrip = trips.find(t => tripPhase(t, today).phase === 'unterwegs');
-  const nextTrip = trips.filter(t => t.datum_von && t.datum_von > today)
-    .sort((a, b) => a.datum_von.localeCompare(b.datum_von))[0];
+  const upcoming = trips.filter(t => t.datum_von && t.datum_von > today)
+    .sort((a, b) => a.datum_von.localeCompare(b.datum_von));
+  const nextTrip = upcoming.find(isConfirmed) || upcoming[0];
   const heroTrip = activeTrip || nextTrip;
   const lastEntry = [...entries].filter(e => e.datum_bis || e.datum_von)
     .sort((a, b) => (b.datum_bis || b.datum_von).localeCompare(a.datum_bis || a.datum_von))[0];
-  const dueSoon = (wishlist || [])
-    .filter(w => w.buchungsfenster_datum && w.buchungsfenster_datum >= today && w.buchungsfenster_datum <= addDaysISO(today, 14))
-    .sort((a, b) => a.buchungsfenster_datum.localeCompare(b.buchungsfenster_datum));
+  // Oeffnende Buchungsfenster: aus der Wunschliste und von eingeplanten, noch nicht bestaetigten Trips.
+  const inWindow = (d) => d && d >= today && d <= addDaysISO(today, 14);
+  const dueSoon = [
+    ...(wishlist || []).filter(w => inWindow(w.buchungsfenster_datum)).map(w => ({ key: `w${w.id}`, name: w.name, datum: w.buchungsfenster_datum, go: { name: 'wishlist' } })),
+    ...trips.filter(t => !isConfirmed(t) && inWindow(t.buchungsfenster_datum)).map(t => ({ key: `t${t.id}`, name: t.titel, datum: t.buchungsfenster_datum, go: { name: 'tripDetail', tripId: t.id } }))
+  ].sort((a, b) => a.datum.localeCompare(b.datum));
 
   const showSkeleton = loading && trips.length === 0 && entries.length === 0;
 
@@ -1358,7 +1513,7 @@ function HomeScreen({ trips, entries, wishlist, loading, slow, onRetry, certWarn
                   <span style={{
                     alignSelf: 'flex-start', marginTop: 4, fontSize: 12, fontWeight: 600, padding: '3px 10px', borderRadius: 999,
                     background: activeTrip ? 'var(--yellow)' : '#3B6640', color: activeTrip ? '#2A2205' : '#FFFFFF'
-                  }}>{tripPhase(heroTrip, today).label}</span>
+                  }}>{tripPhase(heroTrip, today).label}{!isConfirmed(heroTrip) ? ` · ${tripStatusLabel(heroTrip.status)}` : ''}</span>
                 </>
               ) : (
                 <>
@@ -1400,9 +1555,9 @@ function HomeScreen({ trips, entries, wishlist, loading, slow, onRetry, certWarn
         )}
 
         {dueSoon.map(w => {
-          const d = daysBetween(today, w.buchungsfenster_datum);
+          const d = daysBetween(today, w.datum);
           return (
-            <button key={w.id} onClick={() => navigate({ name: 'wishlist' })} style={{
+            <button key={w.key} onClick={() => navigate(w.go)} style={{
               display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px', borderRadius: 14,
               background: '#FBF4DC', border: '1px solid #EAD48A', color: 'var(--text)', cursor: 'pointer',
               textAlign: 'left', fontFamily: 'var(--font-body)', width: '100%'
@@ -1416,7 +1571,7 @@ function HomeScreen({ trips, entries, wishlist, loading, slow, onRetry, certWarn
                   {d === 0 ? tr('Buchung öffnet heute') : d === 1 ? tr('Buchung öffnet morgen') : tr('Buchung öffnet in {d} Tagen', { d: d })}
                 </span>
                 <span style={{ fontSize: 13, color: '#5A4C14', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                  {w.name} · {formatDate(w.buchungsfenster_datum)}
+                  {w.name} · {formatDate(w.datum)}
                 </span>
               </span>
               <ChevronRight size={18} color="#5A4C14" />
@@ -1572,8 +1727,8 @@ function Segmented({ options, value, onChange }) {
           <button key={o.key} role="tab" aria-selected={active} onClick={() => onChange(o.key)} style={{
             height: 36, border: 'none', borderRadius: 9, cursor: 'pointer', fontFamily: 'var(--font-body)',
             background: active ? '#FFFFFF' : 'transparent', boxShadow: active ? '0 1px 3px rgba(30,43,31,0.12)' : 'none',
-            fontSize: 14, fontWeight: active ? 600 : 400, color: active ? 'var(--text)' : 'var(--muted)',
-            whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', padding: '0 4px'
+            fontSize: options.length > 4 ? 13 : 14, fontWeight: active ? 600 : 400, color: active ? 'var(--text)' : 'var(--muted)',
+            whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', padding: options.length > 4 ? '0 2px' : '0 4px'
           }}>{o.label}</button>
         );
       })}
@@ -2675,6 +2830,7 @@ function WishlistForm({ existing, onSaved, onCancel }) {
   const [ort, setOrt] = useState(existing?.ort || '');
   const [keinFenster, setKeinFenster] = useState(existing ? !existing.buchungsfenster_datum : false);
   const [datum, setDatum] = useState(existing?.buchungsfenster_datum || '');
+  const [minNaechte, setMinNaechte] = useState(existing?.min_naechte ? String(existing.min_naechte) : '');
   const [link, setLink] = useState(existing?.link || '');
   const [notizen, setNotizen] = useState(existing?.notizen || '');
   const [saving, setSaving] = useState(false);
@@ -2693,6 +2849,7 @@ function WishlistForm({ existing, onSaved, onCancel }) {
         body: JSON.stringify({
           name, ort, link,
           buchungsfenster_datum: keinFenster ? null : (datum || null),
+          min_naechte: minNaechte ? Number(minNaechte) : null,
           notizen
         })
       });
@@ -2732,6 +2889,11 @@ function WishlistForm({ existing, onSaved, onCancel }) {
           {!keinFenster && (
             <input type="date" value={datum} onChange={e => setDatum(e.target.value)} style={inputStyle} />
           )}
+        </Field>
+
+        <Field label={tr('Mindestanzahl Nächte (optional)')} icon={CalendarDays}>
+          <input type="number" inputMode="numeric" min="1" max="60" value={minNaechte}
+            onChange={e => setMinNaechte(e.target.value.replace(/[^0-9]/g, ''))} style={inputStyle} placeholder={tr('z.B. 3')} />
         </Field>
 
         <Field label={tr('Link (optional)')} icon={Tag}>
@@ -2780,6 +2942,11 @@ function WishlistView({ wishlist, loading, error, onBack, onEdit, onAdd, onDelet
             ? tr('Buchungsfenster öffnet {buchungsfenster_datum}', { buchungsfenster_datum: formatDate(w.buchungsfenster_datum) })
             : tr('Kein Buchungsfenster nötig')}
         </div>
+        {w.min_naechte ? (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: 'var(--muted)', marginTop: 4 }}>
+            <CalendarDays size={13} />{tr('mind. {n} Nächte', { n: w.min_naechte })}
+          </div>
+        ) : null}
 
         {w.link && (
           <a href={w.link} target="_blank" rel="noopener noreferrer" style={{
@@ -2841,23 +3008,47 @@ function WishlistView({ wishlist, loading, error, onBack, onEdit, onAdd, onDelet
   );
 }
 
-function TripForm({ existing, prefill, onSaved, onCancel }) {
+function TripStatusChips({ value, onChange }) {
+  return (
+    <div role="radiogroup" aria-label={tr('Status')} style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+      {TRIP_STATUSES.map(k => {
+        const active = (value || 'bestaetigt') === k;
+        return (
+          <button key={k} type="button" role="radio" aria-checked={active} onClick={() => onChange(k)} style={{
+            borderRadius: 999, padding: '8px 14px', fontSize: 14, cursor: 'pointer', whiteSpace: 'nowrap', fontFamily: 'var(--font-body)',
+            border: `1px ${k === 'bestaetigt' ? 'solid' : 'dashed'} ${active ? 'var(--forest)' : '#9AAE9C'}`,
+            background: active ? 'var(--forest)' : '#FFFFFF', color: active ? '#FFFFFF' : 'var(--muted)', fontWeight: active ? 600 : 400
+          }}>{tripStatusLabel(k)}</button>
+        );
+      })}
+    </div>
+  );
+}
+
+function TripForm({ existing, prefill, trips, onSaved, onCancel }) {
   const [titel, setTitel] = useState(existing?.titel || prefill?.titel || '');
   const [ort, setOrt] = useState(existing?.ort || prefill?.ort || '');
-  const [datumVon, setDatumVon] = useState(existing?.datum_von || todayISO());
-  const [datumBis, setDatumBis] = useState(existing?.datum_bis || addDaysISO(existing?.datum_von || todayISO(), 3));
+  const [datumVon, setDatumVon] = useState(existing?.datum_von || prefill?.datum_von || todayISO());
+  const [datumBis, setDatumBis] = useState(existing?.datum_bis || prefill?.datum_bis || addDaysISO(existing?.datum_von || prefill?.datum_von || todayISO(), 3));
   const [notizen, setNotizen] = useState(existing?.notizen || prefill?.notizen || '');
+  const [status, setStatus] = useState(existing?.status || prefill?.status || 'bestaetigt');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
+  const overlaps = overlappingTrips(trips, datumVon, datumBis, existing?.id);
+
   async function doSave() {
     if (!titel.trim()) { setError(tr('Titel ist ein Pflichtfeld.')); return null; }
+    if (overlaps.length) return null;
     setError('');
     const url = existing ? `/api/trips/${existing.id}` : '/api/trips';
     const method = existing ? 'PUT' : 'POST';
     const res = await fetch(url, {
       method, headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ titel, ort, datum_von: datumVon, datum_bis: datumBis, notizen })
+      body: JSON.stringify({
+        titel, ort, datum_von: datumVon, datum_bis: datumBis, notizen, status,
+        ...(!existing && prefill?.buchungsfenster_datum ? { buchungsfenster_datum: prefill.buchungsfenster_datum } : {})
+      })
     });
     if (!res.ok) throw new Error(tr('Speichern fehlgeschlagen.'));
     return res.json();
@@ -2883,14 +3074,14 @@ function TripForm({ existing, prefill, onSaved, onCancel }) {
     if (!autosaveMounted.current) { autosaveMounted.current = true; return; }
     const timer = setTimeout(async () => {
       try {
-        await doSave();
-        triggerSaved();
+        const saved = await doSave();
+        if (saved) triggerSaved();
       } catch (err) {
         showToast(err.message === 'Failed to fetch' ? tr('Server nicht erreichbar.') : err.message, 'error');
       }
     }, 800);
     return () => clearTimeout(timer);
-  }, [titel, ort, datumVon, datumBis, notizen]);
+  }, [titel, ort, datumVon, datumBis, notizen, status]);
 
   return (
     <div style={{ minHeight: '100%', background: 'var(--bg)', color: 'var(--text)', paddingBottom: 40 }}>
@@ -2918,6 +3109,14 @@ function TripForm({ existing, prefill, onSaved, onCancel }) {
           <input value={ort} onChange={e => setOrt(e.target.value)} style={inputStyle} placeholder={tr('z.B. Sempach, LU')} />
         </Field>
         <CalendarRangePicker datumVon={datumVon} setDatumVon={setDatumVon} datumBis={datumBis} setDatumBis={setDatumBis} />
+        {overlaps.length > 0 && (
+          <div role="alert" style={{ fontSize: 14, lineHeight: 1.4, borderRadius: 10, padding: '10px 12px', background: '#FBE9E4', border: '1px solid #E3AE9E', color: '#6E2A16' }}>
+            {tr('In diesem Zeitraum ist schon {titel} eingeplant. Bitte andere Daten wählen.', { titel: overlaps.map(t => t.titel).join(', ') })}
+          </div>
+        )}
+        <Field label={tr('Status')}>
+          <TripStatusChips value={status} onChange={setStatus} />
+        </Field>
         <Field label={tr('Notizen')}>
           <textarea value={notizen} onChange={e => setNotizen(e.target.value)} rows={3}
             style={{ ...inputStyle, resize: 'vertical', fontFamily: 'var(--font-body)' }} />
@@ -2928,7 +3127,7 @@ function TripForm({ existing, prefill, onSaved, onCancel }) {
             {tr('Fertig')}
           </button>
         ) : (
-          <button type="submit" disabled={saving} style={{ ...primaryButtonStyle, marginTop: 4, marginBottom: 24 }}>
+          <button type="submit" disabled={saving || overlaps.length > 0} style={{ ...primaryButtonStyle, marginTop: 4, marginBottom: 24, opacity: overlaps.length ? 0.6 : 1 }}>
             {saving ? <Loader2 size={17} className="spin" /> : tr('Speichern')}
           </button>
         )}
@@ -2944,7 +3143,8 @@ function tripForDate(trips, dateStr) {
   return trips.find(t => t.datum_von && dateStr >= t.datum_von && dateStr <= (t.datum_bis || t.datum_von));
 }
 
-function MonthCard({ year, month, trips, onSelect }) {
+function MonthCard({ year, month, trips, onSelect, holidays }) {
+  const [infoDay, setInfoDay] = useState(null);
   const firstDay = new Date(year, month, 1);
   const startWeekday = (firstDay.getDay() + 6) % 7; // Montag = 0
   const daysInMonth = new Date(year, month + 1, 0).getDate();
@@ -2962,6 +3162,7 @@ function MonthCard({ year, month, trips, onSelect }) {
     const monthEnd = `${year}-${String(month + 1).padStart(2, '0')}-${String(daysInMonth).padStart(2, '0')}`;
     return von <= monthEnd && bis >= monthStart;
   });
+  const info = infoDay ? holidays?.get(infoDay) : null;
 
   return (
     <div style={{
@@ -2976,31 +3177,51 @@ function MonthCard({ year, month, trips, onSelect }) {
           <div key={w} style={{ textAlign: 'center', fontSize: 11, color: 'var(--muted)', fontVariantNumeric: 'tabular-nums' }}>{w}</div>
         ))}
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 4, marginBottom: 16 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 4, marginBottom: info ? 8 : 16 }}>
         {cells.map((d, i) => {
           if (!d) return <div key={i} />;
           const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
           const trip = tripForDate(trips, dateStr);
+          const confirmed = trip && isConfirmed(trip);
+          const dayInfo = holidays?.get(dateStr);
+          const level = dayInfo?.level || 0;
+          const hasPublic = dayInfo?.publicHolidays?.length > 0;
+          const clickable = trip || dayInfo;
           return (
-            <button key={i} onClick={() => trip && onSelect(trip)} disabled={!trip} style={{
-              aspectRatio: '1', border: 'none', borderRadius: 8, fontSize: 12, cursor: trip ? 'pointer' : 'default',
-              background: trip ? '#6B9071' : 'transparent', color: trip ? '#FFFFFF' : 'var(--text)',
-              fontFamily: 'var(--font-body)'
-            }}>{d}</button>
+            <button key={i} onClick={() => { if (trip) onSelect(trip); else if (dayInfo) setInfoDay(infoDay === dateStr ? null : dateStr); }}
+              disabled={!clickable} aria-label={dateStr} style={{
+                aspectRatio: '1', borderRadius: 8, fontSize: 12, cursor: clickable ? 'pointer' : 'default', position: 'relative',
+                background: confirmed ? '#6B9071' : trip ? '#F3F7F1' : 'transparent',
+                border: trip && !confirmed ? `1.5px dashed ${trip.status === 'idee' ? '#9AAE9C' : 'var(--forest)'}` : infoDay === dateStr ? '1.5px solid var(--forest)' : '1.5px solid transparent',
+                color: confirmed ? '#FFFFFF' : trip ? 'var(--forest)' : 'var(--text)', fontWeight: hasPublic ? 700 : 400,
+                fontFamily: 'var(--font-body)', padding: 0, overflow: 'hidden'
+              }}>
+              {d}
+              {level > 0 && <span aria-hidden="true" style={{ position: 'absolute', left: 3, right: 3, bottom: 2, height: 4, borderRadius: 2, background: HOLIDAY_LEVEL_COLORS[level] }} />}
+            </button>
           );
         })}
       </div>
+      {info && (
+        <div style={{ fontSize: 13, color: 'var(--text)', background: 'var(--card-alt)', border: '1px solid var(--border)', borderRadius: 10, padding: '8px 10px', marginBottom: 12, lineHeight: 1.45 }}>
+          <b>{formatDate(infoDay)}</b>
+          {publicHolidaySummary(info) && <div>{tr('Feiertag: {name}', { name: publicHolidaySummary(info) })}</div>}
+          {holidayLoadText(info) && <div>{holidayLoadText(info)}</div>}
+        </div>
+      )}
       {tripsThisMonth.length > 0 ? (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {tripsThisMonth.map(trip => (
             <button key={trip.id} onClick={() => onSelect(trip)} style={{
               display: 'flex', flexDirection: 'column', alignItems: 'flex-start', width: '100%', textAlign: 'left',
-              background: 'var(--card-alt)', border: '1px solid var(--border)', borderRadius: 12, padding: 12, cursor: 'pointer'
+              background: 'var(--card-alt)', borderRadius: 12, padding: 12, cursor: 'pointer',
+              border: isConfirmed(trip) ? '1px solid var(--border)' : '1.5px dashed #9DBB9F'
             }}>
               <span style={{ fontFamily: 'var(--font-display)', fontSize: 15, color: 'var(--forest)' }}>{trip.titel}</span>
               <span style={{ fontSize: 12, color: 'var(--muted)', marginTop: 2 }}>
                 {formatDate(trip.datum_von)}{trip.datum_bis ? ` - ${formatDate(trip.datum_bis)}` : ''}
                 {trip.ort?.trim() ? <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, marginLeft: 4 }}><CountryFlag ort={trip.ort} />{trip.ort}</span> : null}
+                {!isConfirmed(trip) && <span style={{ marginLeft: 6, fontWeight: 600, color: 'var(--forest)' }}>{tripStatusLabel(trip.status)}</span>}
               </span>
             </button>
           ))}
@@ -3010,6 +3231,20 @@ function MonthCard({ year, month, trips, onSelect }) {
           {tr('Kein Trip in diesem Monat.')}
         </div>
       )}
+    </div>
+  );
+}
+
+function HolidayLegend() {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 12, fontSize: 12, color: 'var(--muted)', flexWrap: 'wrap' }}>
+      <span>{tr('Schulferien')}</span>
+      {[1, 2, 3].map(l => (
+        <span key={l} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+          <span style={{ width: 16, height: 5, borderRadius: 3, background: HOLIDAY_LEVEL_COLORS[l] }} />
+          {l === 1 ? tr('wenige') : l === 2 ? tr('mittel') : tr('viele')}
+        </span>
+      ))}
     </div>
   );
 }
@@ -3033,15 +3268,19 @@ function TripCalendarView({ trips, onSelect }) {
     }
     return list;
   }, [trips]);
+  const holidays = useHolidays(months.map(m => m.year));
 
   return (
-    <div style={{
-      display: 'flex', overflowX: 'auto', scrollSnapType: 'x mandatory', gap: 0,
-      padding: '4px 18px 20px'
-    }}>
-      {months.map(m => (
-        <MonthCard key={`${m.year}-${m.month}`} year={m.year} month={m.month} trips={trips} onSelect={onSelect} />
-      ))}
+    <div>
+      <div style={{
+        display: 'flex', overflowX: 'auto', scrollSnapType: 'x mandatory', gap: 0,
+        padding: '4px 18px 12px'
+      }}>
+        {months.map(m => (
+          <MonthCard key={`${m.year}-${m.month}`} year={m.year} month={m.month} trips={trips} onSelect={onSelect} holidays={holidays} />
+        ))}
+      </div>
+      {holidays && holidays.size > 0 && <div style={{ padding: '0 18px 14px' }}><HolidayLegend /></div>}
     </div>
   );
 }
@@ -3065,14 +3304,16 @@ function PlannedTripCard({ trip, onClick }) {
   const active = phase.phase === 'unterwegs';
   const [, m, d] = (trip.datum_von || '--').split('-');
   const meta = [trip.ort, shortRange(trip.datum_von, trip.datum_bis), nightsLabel(trip.datum_von, trip.datum_bis)].filter(Boolean).join(' · ');
+  const confirmed = isConfirmed(trip);
   return (
     <button onClick={onClick} style={{
       display: 'flex', alignItems: 'center', gap: 12, padding: 12, borderRadius: 16, width: '100%',
-      background: active ? '#E3EEDF' : 'var(--card-alt)', border: `1px solid ${active ? '#9DBB9F' : '#C9DBC6'}`,
+      background: active ? '#E3EEDF' : confirmed ? 'var(--card-alt)' : '#FFFFFF',
+      border: confirmed ? `1px solid ${active ? '#9DBB9F' : '#C9DBC6'}` : `1.5px dashed ${trip.status === 'idee' ? '#9AAE9C' : 'var(--forest)'}`,
       cursor: 'pointer', textAlign: 'left', fontFamily: 'var(--font-body)', color: 'var(--text)'
     }}>
       <span style={{
-        width: 56, height: 60, borderRadius: 12, background: 'var(--forest)', color: '#FFFFFF', flexShrink: 0,
+        width: 56, height: 60, borderRadius: 12, background: confirmed ? 'var(--forest)' : '#9DBB9F', color: '#FFFFFF', flexShrink: 0,
         display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center'
       }}>
         <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: 0.6, color: '#CFE0CC' }}>{m && m !== '' ? monthsShort()[Number(m) - 1] : ''}</span>
@@ -3081,10 +3322,17 @@ function PlannedTripCard({ trip, onClick }) {
       <span style={{ display: 'flex', flexDirection: 'column', gap: 3, flex: 1, minWidth: 0 }}>
         <span style={{ fontFamily: 'var(--font-display)', fontSize: 17, fontWeight: 500 }}>{trip.titel}</span>
         {meta && <span style={{ fontSize: 13, color: 'var(--muted)' }}>{meta}</span>}
-        <span style={{
-          alignSelf: 'flex-start', fontSize: 12, fontWeight: 600, padding: '2px 8px', borderRadius: 999,
-          background: active ? 'var(--forest)' : '#E3EEDF', color: active ? '#FFFFFF' : 'var(--forest)'
-        }}>{phase.label}</span>
+        <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          <span style={{
+            fontSize: 12, fontWeight: 600, padding: '2px 8px', borderRadius: 999,
+            background: active ? 'var(--forest)' : '#E3EEDF', color: active ? '#FFFFFF' : 'var(--forest)'
+          }}>{phase.label}</span>
+          {!confirmed && (
+            <span style={{ fontSize: 12, fontWeight: 600, padding: '1px 8px', borderRadius: 999, border: '1px dashed var(--forest)', color: 'var(--forest)' }}>
+              {tripStatusLabel(trip.status)}
+            </span>
+          )}
+        </span>
       </span>
       <ChevronRight size={18} color="var(--muted)" />
     </button>
@@ -3126,11 +3374,414 @@ function EntryRow({ entry, onClick, last }) {
   );
 }
 
+// --- Saisonplanung (seit v4.12) ---
+// Brett fuer eine ganze Saison: pro Monat eine Zeitleiste mit Trips nach Status und dem
+// Ferienband. Ein Platz aus der Wunschliste wird angetippt, dann zeigt das Brett passende Luecken
+// (mindestens so viele freie Naechte wie der Platz verlangt). Ein Monat oder eine Luecke oeffnet
+// das Einplanen mit Tagesansicht.
+
+function daysInMonthOf(year, month) {
+  return new Date(year, month + 1, 0).getDate();
+}
+
+function weekdayShortOf(iso) {
+  const [y, m, d] = iso.split('-').map(Number);
+  return weekdaysShort()[(new Date(y, m - 1, d).getDay() + 6) % 7];
+}
+
+// Naechte, die durch Trips belegt sind (Nacht = Anreisetag bis Tag vor der Abreise).
+function occupiedNightsMap(trips) {
+  const map = new Map();
+  for (const t of trips) {
+    if (!t.datum_von) continue;
+    const lastNight = t.datum_bis && t.datum_bis > t.datum_von ? addDaysISO(t.datum_bis, -1) : t.datum_von;
+    eachDayISO(t.datum_von, lastNight, (iso) => { if (!map.has(iso)) map.set(iso, t); });
+  }
+  return map;
+}
+
+// Freie Abschnitte im Jahr, getrennt nach "ruhig" (Stufe 0 bis 1) und "viel los" (ab Stufe 2),
+// jeweils mit mindestens minNights Naechten. Vergangene Tage zaehlen nicht.
+function freeRuns(year, occupied, holidays, minNights) {
+  const runs = [];
+  const today = todayISO();
+  let iso = `${year}-01-01` < today ? today : `${year}-01-01`;
+  const end = `${year}-12-31`;
+  let cur = null;
+  const close = () => { if (cur && cur.nights >= minNights) runs.push(cur); cur = null; };
+  while (iso <= end) {
+    if (occupied.has(iso)) close();
+    else {
+      const busy = holidayLevel(holidays, iso) >= 2;
+      if (cur && cur.busy === busy) { cur.nights += 1; cur.last = iso; }
+      else { close(); cur = { start: iso, last: iso, nights: 1, busy }; }
+    }
+    iso = addDaysISO(iso, 1);
+  }
+  close();
+  return runs;
+}
+
+function monthInfoText(year, month, holidays) {
+  if (!holidays) return '';
+  const dim = daysInMonthOf(year, month);
+  const home = (APP_CONFIG.homeCountry || '').toUpperCase();
+  const names = [];
+  let maxLevel = 0;
+  const countries = new Set();
+  for (let d = 1; d <= dim; d++) {
+    const info = holidays.get(toISO(year, month, d));
+    if (!info) continue;
+    maxLevel = Math.max(maxLevel, info.level);
+    Object.keys(info.school).forEach(c => countries.add(c));
+    for (const p of info.publicHolidays) {
+      const relevant = home ? p.countries.includes(home) : p.nationwide;
+      if (relevant && !names.includes(p.name)) names.push(p.name);
+    }
+  }
+  if (names.length) return names.slice(0, 3).join(', ');
+  if (maxLevel >= 2) return tr('Schulferien {countries}', { countries: Array.from(countries).join(', ') });
+  return '';
+}
+
+const statusBarStyle = (status) => {
+  if (!status || status === 'bestaetigt') return { background: 'var(--forest)', color: '#FFFFFF', border: '1.5px solid var(--forest)' };
+  if (status === 'angefragt') return { background: '#E3EEDF', color: 'var(--forest)', border: '1.5px dashed var(--forest)' };
+  return { background: '#FFFFFF', color: '#5C6B5E', border: '1.5px dashed #9AAE9C' };
+};
+
+function SeasonMonth({ year, month, trips, holidays, runs, selectedWish, onOpenMonth, onOpenTrip }) {
+  const dim = daysInMonthOf(year, month);
+  const monthStart = toISO(year, month, 1);
+  const monthEnd = toISO(year, month, dim);
+  const dayIndex = (iso) => Number(iso.slice(8, 10));
+
+  // Trip-Abschnitte in diesem Monat, auf Zeilen verteilt, damit sich nichts ueberlappt.
+  const segments = trips.filter(t => t.datum_von && t.datum_von <= monthEnd && (t.datum_bis || t.datum_von) >= monthStart)
+    .map(t => {
+      const s = t.datum_von < monthStart ? monthStart : t.datum_von;
+      const e = (t.datum_bis || t.datum_von) > monthEnd ? monthEnd : (t.datum_bis || t.datum_von);
+      return { trip: t, from: dayIndex(s), to: dayIndex(e) };
+    })
+    .sort((a, b) => a.from - b.from);
+  const laneEnds = [];
+  for (const seg of segments) {
+    let lane = laneEnds.findIndex(end => end < seg.from);
+    if (lane === -1) { lane = laneEnds.length; laneEnds.push(seg.to); } else laneEnds[lane] = seg.to;
+    seg.lane = lane;
+  }
+  const monthRuns = (runs || []).filter(r => r.start <= monthEnd && r.last >= monthStart).map(r => ({
+    ...r,
+    from: dayIndex(r.start < monthStart ? monthStart : r.start),
+    to: dayIndex(r.last > monthEnd ? monthEnd : r.last)
+  }));
+  const lanes = Math.max(1, laneEnds.length) + (selectedWish && monthRuns.length ? 1 : 0);
+  const laneH = 24;
+  const pct = (from, to) => ({ left: `${((from - 1) / dim) * 100}%`, width: `${((to - from + 1) / dim) * 100}%` });
+  const info = monthInfoText(year, month, holidays);
+  const monthName = new Date(year, month, 1).toLocaleDateString(numLocale(), { month: 'long' });
+  const runLane = laneEnds.length;
+
+  return (
+    <div role="button" tabIndex={0} onClick={() => onOpenMonth(month, null)}
+      style={{ background: '#FFFFFF', border: '1px solid var(--border)', borderRadius: 14, padding: '10px 12px', cursor: 'pointer' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8, marginBottom: 6 }}>
+        <span style={{ fontSize: 14, fontWeight: 600, textTransform: 'capitalize' }}>{monthName}</span>
+        {info && <span style={{ fontSize: 12, color: 'var(--muted)', textAlign: 'right', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{info}</span>}
+      </div>
+      <div style={{ position: 'relative', height: lanes * laneH + 8 }}>
+        {segments.map(seg => (
+          <button key={seg.trip.id} onClick={(e) => { e.stopPropagation(); onOpenTrip(seg.trip); }} style={{
+            position: 'absolute', top: seg.lane * laneH, height: laneH - 4, ...pct(seg.from, seg.to), minWidth: 18,
+            ...statusBarStyle(seg.trip.status), borderRadius: 6, fontSize: 11, fontWeight: 600, padding: '0 5px',
+            textAlign: 'left', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', cursor: 'pointer',
+            fontFamily: 'var(--font-body)', boxSizing: 'border-box'
+          }}>{seg.trip.titel}</button>
+        ))}
+        {selectedWish && monthRuns.map(r => (
+          <button key={r.start} onClick={(e) => { e.stopPropagation(); onOpenMonth(month, r.start < monthStart ? monthStart : r.start); }} style={{
+            position: 'absolute', top: runLane * laneH, height: laneH - 4, ...pct(r.from, r.to), minWidth: 22,
+            background: r.busy ? '#FBEFD0' : '#DCEBD8', border: `1.5px solid ${r.busy ? '#C9A227' : '#3E6B44'}`,
+            color: r.busy ? '#6B5310' : '#24452A', borderRadius: 6, fontSize: 11, fontWeight: 600, padding: '0 5px',
+            whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', cursor: 'pointer', fontFamily: 'var(--font-body)',
+            boxSizing: 'border-box'
+          }}>{r.busy ? (r.nights <= 21 ? tr('viel los · {n} N', { n: r.nights }) : tr('viel los')) : (r.nights <= 21 ? tr('{n} N frei', { n: r.nights }) : tr('frei'))}</button>
+        ))}
+        <div aria-hidden="true" style={{ position: 'absolute', left: 0, right: 0, bottom: 0, height: 6, display: 'flex', borderRadius: 3, overflow: 'hidden', background: '#EEF2EB' }}>
+          {Array.from({ length: dim }, (_, i) => (
+            <span key={i} style={{ flex: 1, background: HOLIDAY_LEVEL_COLORS[holidayLevel(holidays, toISO(year, month, i + 1))] }} />
+          ))}
+        </div>
+      </div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: '#8A978B', marginTop: 3, fontVariantNumeric: 'tabular-nums' }}>
+        <span>1</span><span>8</span><span>15</span><span>22</span><span>{dim}</span>
+      </div>
+    </div>
+  );
+}
+
+function SeasonBoard({ trips, wishlist, navigate, onPlanned }) {
+  const now = new Date();
+  const [year, setYear] = useState(now.getMonth() >= 8 ? now.getFullYear() + 1 : now.getFullYear());
+  const [selectedId, setSelectedId] = useState(null);
+  const [plan, setPlan] = useState(null); // { month, start }
+  const holidays = useHolidays([year]);
+  const selectedWish = wishlist.find(w => w.id === selectedId) || null;
+
+  const occupied = useMemo(() => occupiedNightsMap(trips), [trips]);
+  const runs = useMemo(() => selectedWish ? freeRuns(year, occupied, holidays, selectedWish.min_naechte || 1) : [],
+    [selectedWish, year, occupied, holidays]);
+  const lastMonth = 11;
+  const firstMonth = year === now.getFullYear() ? now.getMonth() : 0;
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <span style={{ fontFamily: 'var(--font-display)', fontSize: 20 }}>{tr('Saison {year}', { year })}</span>
+        <span style={{ display: 'flex', gap: 4 }}>
+          <button onClick={() => setYear(y => y - 1)} disabled={year <= now.getFullYear()} aria-label={tr('Vorheriges Jahr')}
+            style={{ ...iconButtonStyle, opacity: year <= now.getFullYear() ? 0.35 : 1 }}><ChevronLeft size={20} /></button>
+          <button onClick={() => setYear(y => y + 1)} aria-label={tr('Nächstes Jahr')} style={iconButtonStyle}><ChevronRight size={20} /></button>
+        </span>
+      </div>
+
+      {wishlist.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, fontWeight: 600 }}>
+            <span>{tr('Wunschliste')}</span>
+            {selectedWish && (
+              <button onClick={() => setSelectedId(null)} style={{ background: 'none', border: 'none', color: 'var(--forest)', fontSize: 13, fontWeight: 600, cursor: 'pointer', padding: 0, fontFamily: 'var(--font-body)' }}>
+                {tr('Auswahl aufheben')}
+              </button>
+            )}
+          </div>
+          <div style={{ display: 'flex', gap: 8, overflowX: 'auto', margin: '0 -18px', padding: '0 18px 4px' }}>
+            {wishlist.map(w => {
+              const sel = w.id === selectedId;
+              return (
+                <button key={w.id} onClick={() => setSelectedId(sel ? null : w.id)} aria-pressed={sel} style={{
+                  minWidth: 150, maxWidth: 190, flexShrink: 0, textAlign: 'left', borderRadius: 12, padding: '9px 10px', cursor: 'pointer',
+                  background: sel ? '#E3EEDF' : 'var(--card-alt)', border: sel ? '2px solid var(--forest)' : '1px solid var(--border)',
+                  fontFamily: 'var(--font-body)', color: 'var(--text)', display: 'flex', flexDirection: 'column', gap: 2
+                }}>
+                  <span style={{ fontSize: 14, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{w.name}</span>
+                  {w.min_naechte ? <span style={{ fontSize: 12, color: 'var(--muted)' }}>{tr('mind. {n} Nächte', { n: w.min_naechte })}</span> : null}
+                  {w.buchungsfenster_datum && <span style={{ fontSize: 12, color: 'var(--forest)' }}>{tr('Buchung ab {datum}', { datum: formatDate(w.buchungsfenster_datum) })}</span>}
+                </button>
+              );
+            })}
+          </div>
+          {selectedWish && (
+            <div style={{ fontSize: 13, color: 'var(--forest)', fontWeight: 600 }}>
+              {runs.length ? tr('Lücke oder Monat antippen zum Einplanen.') : tr('Keine passende Lücke in dieser Saison.')}
+            </div>
+          )}
+        </div>
+      )}
+
+      {Array.from({ length: lastMonth - firstMonth + 1 }, (_, i) => firstMonth + i).map(m => (
+        <SeasonMonth key={`${year}-${m}`} year={year} month={m} trips={trips} holidays={holidays}
+          runs={runs} selectedWish={selectedWish}
+          onOpenMonth={(month, start) => setPlan({ month, start })}
+          onOpenTrip={(t) => navigate({ name: 'tripDetail', tripId: t.id })} />
+      ))}
+
+      {holidays && holidays.size > 0 && <HolidayLegend />}
+
+      {plan && (
+        <PlanModal year={year} month={plan.month} startHint={plan.start} wish={selectedWish} trips={trips} holidays={holidays}
+          onClose={() => setPlan(null)}
+          onSaved={(trip, wishId) => { setPlan(null); setSelectedId(null); onPlanned(trip, wishId); }} />
+      )}
+    </div>
+  );
+}
+
+function PlanModal({ year, month, startHint, wish, trips, holidays: initialHolidays, onClose, onSaved }) {
+  const today = todayISO();
+  const [view, setView] = useState({ year, month });
+  const [arrival, setArrival] = useState(startHint && startHint >= today ? startHint : null);
+  const [nights, setNights] = useState(wish?.min_naechte || 2);
+  const [titel, setTitel] = useState(wish?.name || '');
+  const [ort, setOrt] = useState(wish?.ort || '');
+  const [ortForDistance, setOrtForDistance] = useState(wish?.ort || '');
+  const [status, setStatus] = useState('idee');
+  const [saving, setSaving] = useState(false);
+  const otherYear = useHolidays(view.year !== year ? [view.year] : []);
+  const holidays = view.year === year ? initialHolidays : otherYear;
+  const occupied = useMemo(() => occupiedNightsMap(trips), [trips]);
+
+  useEffect(() => {
+    const t = setTimeout(() => setOrtForDistance(ort.trim()), 800);
+    return () => clearTimeout(t);
+  }, [ort]);
+
+  const departure = arrival ? addDaysISO(arrival, nights) : null;
+  const lastNight = arrival ? addDaysISO(arrival, nights - 1) : null;
+  const overlaps = arrival ? overlappingTrips(trips, arrival, departure) : [];
+  const cells = buildMonthGrid(view.year, view.month);
+  const monthTitle = new Date(view.year, view.month, 1).toLocaleDateString(numLocale(), { month: 'long', year: 'numeric' });
+  const minN = wish?.min_naechte || 0;
+
+  function shiftMonth(delta) {
+    setView(v => {
+      const d = new Date(v.year, v.month + delta, 1);
+      return { year: d.getFullYear(), month: d.getMonth() };
+    });
+  }
+
+  // Hinweise zum gewaehlten Zeitraum.
+  const hints = [];
+  if (arrival) {
+    overlaps.forEach(t => hints.push({ block: true, text: tr('In diesem Zeitraum ist schon {titel} eingeplant. Bitte andere Daten wählen.', { titel: t.titel }) }));
+    if (minN && nights < minN) hints.push({ warn: true, text: tr('Weniger als die Mindestanzahl von {n} Nächten.', { n: minN }) });
+    const pub = [];
+    eachDayISO(arrival, departure, (iso) => {
+      const info = holidays?.get(iso);
+      (info?.publicHolidays || []).forEach(p => { const label = `${p.name} (${p.countries.join(', ')})`; if (!pub.includes(label)) pub.push(label); });
+    });
+    if (pub.length) hints.push({ warn: true, text: tr('Feiertag: {name}', { name: pub.join(' · ') }) });
+    let peak = null;
+    eachDayISO(arrival, lastNight, (iso) => { const info = holidays?.get(iso); if (info && (!peak || info.score > peak.score)) peak = info; });
+    if (peak && peak.level >= 2) hints.push({ warn: true, text: `${holidayLoadText(peak)} ${tr('Früh buchen.')}` });
+    else if (peak && peak.level === 1) hints.push({ warn: false, text: holidayLoadText(peak) });
+    if (wish?.buchungsfenster_datum) hints.push({ warn: false, text: tr('Buchungsfenster öffnet {buchungsfenster_datum}', { buchungsfenster_datum: formatDate(wish.buchungsfenster_datum) }) });
+  }
+
+  async function save() {
+    if (!arrival || !titel.trim() || overlaps.length) return;
+    setSaving(true);
+    try {
+      const notizen = wish ? (wish.link ? [wish.notizen, tr('Mehr Infos: {link}', { link: wish.link })].filter(Boolean).join('\n\n') : (wish.notizen || '')) : '';
+      const res = await fetch('/api/trips', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          titel: titel.trim(), ort: ort.trim(), datum_von: arrival, datum_bis: departure, notizen, status,
+          buchungsfenster_datum: wish?.buchungsfenster_datum || null
+        })
+      });
+      if (!res.ok) throw new Error(tr('Konnte nicht gespeichert werden.'));
+      const trip = await res.json();
+      if (wish) await fetch(`/api/wishlist/${wish.id}`, { method: 'DELETE' }).catch(() => {});
+      onSaved(trip, wish?.id || null);
+    } catch (err) {
+      showToast(err.message === 'Failed to fetch' ? tr('Server nicht erreichbar.') : err.message, 'error');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const stepBtn = { ...iconButtonStyle, width: 40, height: 40, border: '1px solid var(--border)', borderRadius: 10, fontSize: 20 };
+
+  return (
+    <div onClick={onClose} style={{
+      position: 'fixed', inset: 0, background: 'rgba(30,43,31,0.45)', zIndex: 500, display: 'flex',
+      alignItems: 'flex-end', justifyContent: 'center', animation: 'fadeIn 0.15s ease-out'
+    }}>
+      <div onClick={e => e.stopPropagation()} role="dialog" aria-label={tr('Einplanen')} style={{
+        background: '#FFFFFF', width: '100%', maxWidth: 420, maxHeight: '92%', overflowY: 'auto', borderRadius: '20px 20px 0 0',
+        padding: '16px 18px calc(18px + env(safe-area-inset-bottom))', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: 14
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <span style={{ fontFamily: 'var(--font-display)', fontSize: 19 }}>{wish ? tr('{name} einplanen', { name: wish.name }) : tr('Trip einplanen')}</span>
+          <button onClick={onClose} aria-label={tr('Schliessen')} style={iconButtonStyle}><X size={18} /></button>
+        </div>
+
+        <div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+            <button onClick={() => shiftMonth(-1)} aria-label={tr('Vorheriger Monat')} style={iconButtonStyle}><ChevronLeft size={20} /></button>
+            <span style={{ fontSize: 15, fontWeight: 600, textTransform: 'capitalize' }}>{monthTitle}</span>
+            <button onClick={() => shiftMonth(1)} aria-label={tr('Nächster Monat')} style={iconButtonStyle}><ChevronRight size={20} /></button>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 4, marginBottom: 4 }}>
+            {weekdaysShort().map(w => <div key={w} style={{ textAlign: 'center', fontSize: 11, color: 'var(--muted)' }}>{w}</div>)}
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 4 }}>
+            {cells.map((d, i) => {
+              if (!d) return <div key={i} />;
+              const iso = toISO(view.year, view.month, d);
+              const past = iso < today;
+              const trip = occupied.get(iso);
+              const inRange = arrival && iso >= arrival && iso <= lastNight;
+              const isDeparture = departure && iso === departure;
+              const info = holidays?.get(iso);
+              const level = info?.level || 0;
+              const tripStyle = !trip ? null
+                : isConfirmed(trip) ? { background: '#E6EDE2', color: '#7A877C', border: '1.5px solid #E6EDE2' }
+                : { background: '#FFFFFF', color: '#7A877C', border: `1.5px dashed ${trip.status === 'idee' ? '#B5C4B6' : '#7E9A82'}` };
+              return (
+                <button key={i} disabled={past || Boolean(trip)} onClick={() => setArrival(iso)} aria-label={iso} style={{
+                  aspectRatio: '1', borderRadius: 8, position: 'relative', padding: 0, fontSize: 13, fontFamily: 'var(--font-body)',
+                  cursor: past || trip ? 'default' : 'pointer', opacity: past ? 0.35 : 1, overflow: 'hidden',
+                  fontWeight: info?.publicHolidays?.length ? 700 : 400,
+                  background: inRange ? 'var(--forest)' : isDeparture ? '#C9DBC6' : trip ? tripStyle.background : 'transparent',
+                  color: inRange ? '#FFFFFF' : trip ? tripStyle.color : 'var(--text)',
+                  border: inRange ? '1.5px solid var(--forest)' : trip ? tripStyle.border : '1.5px solid transparent'
+                }}>
+                  {d}
+                  {level > 0 && <span aria-hidden="true" style={{ position: 'absolute', left: 3, right: 3, bottom: 2, height: 4, borderRadius: 2, background: HOLIDAY_LEVEL_COLORS[level] }} />}
+                </button>
+              );
+            })}
+          </div>
+          {!arrival && <p style={{ fontSize: 13, color: 'var(--muted)', margin: '10px 0 0' }}>{tr('Anreisetag antippen.')}</p>}
+        </div>
+
+        {arrival && (
+          <>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
+                <span style={{ fontSize: 15, fontWeight: 600 }}>
+                  {tr('{von} bis {bis}', { von: `${weekdayShortOf(arrival)} ${formatDate(arrival)}`, bis: `${weekdayShortOf(departure)} ${formatDate(departure)}` })}
+                </span>
+                <span style={{ fontSize: 13, color: minN && nights < minN ? '#93341C' : 'var(--muted)' }}>
+                  {nights === 1 ? tr('1 Nacht') : tr('{n} Nächte', { n: nights })}{minN ? tr(' · Minimum {n}', { n: minN }) : ''}
+                </span>
+              </div>
+              <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                <button onClick={() => setNights(n => Math.max(1, n - 1))} aria-label={tr('Eine Nacht weniger')} style={stepBtn}>−</button>
+                <button onClick={() => setNights(n => Math.min(60, n + 1))} aria-label={tr('Eine Nacht mehr')} style={stepBtn}>+</button>
+              </div>
+            </div>
+
+            {hints.length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {hints.map((h, i) => (
+                  <div key={i} role={h.block ? 'alert' : undefined} style={{
+                    fontSize: 13, lineHeight: 1.4, borderRadius: 10, padding: '8px 10px',
+                    background: h.block ? '#FBE9E4' : h.warn ? '#FBEFD0' : 'var(--card-alt)',
+                    color: h.block ? '#6E2A16' : h.warn ? '#6B5310' : 'var(--forest)',
+                    border: h.block ? '1px solid #E3AE9E' : 'none'
+                  }}>{h.text}</div>
+                ))}
+              </div>
+            )}
+
+            <Field label={tr('Campingplatz *')} icon={Tent}>
+              <input value={titel} onChange={e => setTitel(e.target.value)} style={inputStyle} placeholder={tr('z.B. TCS Camping Sempach')} />
+            </Field>
+            <Field label={tr('Ort')} icon={MapPin}>
+              <input value={ort} onChange={e => setOrt(e.target.value)} style={inputStyle} placeholder={tr('z.B. Sempach, LU')} />
+            </Field>
+            {ortForDistance && <TripDistance trip={{ id: 'plan', ort: ortForDistance, datum_von: arrival }} trips={trips} />}
+            <Field label={tr('Status')}>
+              <TripStatusChips value={status} onChange={setStatus} />
+            </Field>
+            <button onClick={save} disabled={saving || !titel.trim() || overlaps.length > 0} style={{ ...primaryButtonStyle, opacity: titel.trim() && !overlaps.length ? 1 : 0.6 }}>
+              {saving ? <Loader2 size={17} className="spin" /> : tr('Einplanen')}
+            </button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 const tripsH2Style = { margin: 0, fontSize: 13, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 };
 
 const filterLabelStyle = { fontSize: 12, fontWeight: 600, color: 'var(--muted)' };
 
-function TripsHub({ trips, entries, wishlist, loading, error, navigate }) {
+function TripsHub({ trips, entries, wishlist, loading, error, navigate, onPlanned }) {
   const [mode, setMode] = useState('liste');
   const [filterOpen, setFilterOpen] = useState(false);
   const [search, setSearch] = useState('');
@@ -3267,6 +3918,7 @@ function TripsHub({ trips, entries, wishlist, loading, error, navigate }) {
         }} options={[
           { key: 'liste', label: tr('Liste') },
           { key: 'kalender', label: tr('Kalender') },
+          { key: 'saison', label: tr('Saison') },
           { key: 'wunsch', label: wishlist.length ? tr('Wunsch {length}', { length: wishlist.length }) : tr('Wunsch') },
           { key: 'karte', label: tr('Karte') }
         ]} />
@@ -3282,6 +3934,10 @@ function TripsHub({ trips, entries, wishlist, loading, error, navigate }) {
               </a>
             </div>
           </div>
+        )}
+
+        {mode === 'saison' && (
+          <SeasonBoard trips={trips} wishlist={wishlist} navigate={navigate} onPlanned={onPlanned} />
         )}
 
         {mode === 'liste' && loading && trips.length === 0 && entries.length === 0 && (
@@ -4959,6 +5615,25 @@ function GeneralSettings({ onConfigChanged }) {
   const [vehicleInput, setVehicleInput] = useState(APP_CONFIG.vehicleName);
   const [vehicleSaved, setVehicleSaved] = useState(false);
   const [error, setError] = useState('');
+  const currentHolidayCountries = () => APP_CONFIG.holidayCountries == null
+    ? ['CH', 'DE', 'AT']
+    : APP_CONFIG.holidayCountries.split(',').map(c => c.trim()).filter(c => HOLIDAY_COUNTRY_CHOICES.includes(c));
+  const [holidayCountries, setHolidayCountries] = useState(currentHolidayCountries);
+
+  async function toggleHolidayCountry(code) {
+    const next = holidayCountries.includes(code) ? holidayCountries.filter(c => c !== code) : [...holidayCountries, code];
+    const value = next.length ? next.join(',') : 'NONE';
+    setError('');
+    try {
+      await saveSetting('holiday_countries', value);
+      APP_CONFIG.holidayCountries = value;
+      setHolidayCountries(next);
+      invalidateHolidayCache();
+      onConfigChanged();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
 
   async function saveHome(e) {
     e.preventDefault();
@@ -5079,6 +5754,16 @@ function GeneralSettings({ onConfigChanged }) {
           </button>
         </form>
         <p style={smallText}>{tr('Name, unter dem das Fahrzeug in Finanzen und beim Kilometerstand erscheint.')}</p>
+      </div>
+
+      <div>
+        <div style={sectionLabelStyle}>{tr('Schulferien im Kalender')}</div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+          {HOLIDAY_COUNTRY_CHOICES.map(c => (
+            <TagChip key={c} small label={c} active={holidayCountries.includes(c)} onClick={() => toggleHolidayCountry(c)} />
+          ))}
+        </div>
+        <p style={smallText}>{tr('Ferien und Feiertage dieser Länder erscheinen im Kalender und in der Saisonplanung.')}</p>
       </div>
       {error && <div style={{ color: '#B3402A', fontSize: 14 }}>{error}</div>}
     </div>
@@ -5794,8 +6479,25 @@ function TripDetail({ tripId, trips, entries, lessons, onRefresh, onBack, onEdit
   const [poiOpen, setPoiOpen] = useState(false);
   const [lessonOpen, setLessonOpen] = useState(false);
   const [weatherDays, setWeatherDays] = useState(null);
+  const [statusSaving, setStatusSaving] = useState(false);
   if (!trip) return null;
   const existingEntry = entries?.find(e => e.trip_id === trip.id);
+
+  async function changeStatus(next) {
+    if (next === (trip.status || 'bestaetigt') || statusSaving) return;
+    setStatusSaving(true);
+    try {
+      const res = await fetch(`/api/trips/${trip.id}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: next })
+      });
+      if (!res.ok) throw new Error(tr('Konnte nicht gespeichert werden.'));
+      await onRefresh(true);
+    } catch (e) {
+      showToast(e.message === 'Failed to fetch' ? tr('Server nicht erreichbar.') : e.message, 'error');
+    } finally {
+      setStatusSaving(false);
+    }
+  }
   const items = trip.items || [];
   const meals = trip.meals || [];
   const countOpen = (type) => items.filter(i => i.type === type && !i.checked).length;
@@ -5869,6 +6571,17 @@ function TripDetail({ tripId, trips, entries, lessons, onRefresh, onBack, onEdit
             </span>
           )}
           <TripDistance trip={trip} trips={trips} />
+          {phase.phase !== 'vorbei' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
+              <TripStatusChips value={trip.status} onChange={changeStatus} />
+              {!isConfirmed(trip) && trip.buchungsfenster_datum && (
+                <span style={{ fontSize: 13, color: 'var(--forest)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <Calendar size={13} />
+                  {tr('Buchungsfenster öffnet {buchungsfenster_datum}', { buchungsfenster_datum: formatDate(trip.buchungsfenster_datum) })}
+                </span>
+              )}
+            </div>
+          )}
           {trip.ort && (
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 6 }}>
               <a href={`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(trip.ort)}`}
@@ -6597,6 +7310,13 @@ export default function CampingTagebuch() {
     setView({ name: 'tripDetail', tripId: trip.id });
   }
 
+  // Aus der Saisonplanung eingeplant: Liste aktualisieren, Wunsch entfernen, auf dem Brett bleiben.
+  function handlePlannedTrip(trip, wishId) {
+    setTrips(prev => [...prev.filter(t => t.id !== trip.id), trip].sort((a, b) => (a.datum_von || '').localeCompare(b.datum_von || '')));
+    if (wishId) setWishlist(prev => prev.filter(w => w.id !== wishId));
+    showToast(tr('Eingeplant'));
+  }
+
   function handleDeletedTrip(id) {
     setTrips(prev => prev.filter(t => t.id !== id));
     showToast(tr('Gelöscht'));
@@ -6713,7 +7433,7 @@ export default function CampingTagebuch() {
 
       {view.name === 'trips' && (
         <TripsHub trips={trips} entries={entries} wishlist={wishlist} loading={loading || tripsLoading}
-          error={error || tripsError} navigate={navigate} />
+          error={error || tripsError} navigate={navigate} onPlanned={handlePlannedTrip} />
       )}
 
       {view.name === 'wishlist' && (
@@ -6725,7 +7445,7 @@ export default function CampingTagebuch() {
           onConvertToTrip={(item) => navigate({
             name: 'addTrip', fromWishlistId: item.id,
             prefill: {
-              titel: item.name, ort: item.ort,
+              titel: item.name, ort: item.ort, status: 'idee', buchungsfenster_datum: item.buchungsfenster_datum || null,
               notizen: item.link ? [item.notizen, tr('Mehr Infos: {link}', { link: item.link })].filter(Boolean).join('\n\n') : (item.notizen || '')
             }
           })} />
@@ -6818,11 +7538,11 @@ export default function CampingTagebuch() {
       )}
 
       {view.name === 'addTrip' && (
-        <TripForm prefill={view.prefill} onSaved={handleSavedTrip} onCancel={() => navigate({ name: 'trips' })} />
+        <TripForm prefill={view.prefill} trips={trips} onSaved={handleSavedTrip} onCancel={() => navigate({ name: 'trips' })} />
       )}
 
       {view.name === 'editTrip' && (
-        <TripForm existing={view.trip} onSaved={handleSavedTrip}
+        <TripForm existing={view.trip} trips={trips} onSaved={handleSavedTrip}
           onCancel={() => navigate({ name: 'tripDetail', tripId: view.trip.id })} />
       )}
       </div>
