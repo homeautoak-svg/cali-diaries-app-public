@@ -499,7 +499,12 @@ const EN_TEXT = {
   "Regionen": "regions",
   "ganz {land}": "all of {land}",
   "{n} von {total} {regionen} ({land})": "{n} of {total} {regionen} ({land})",
-  "In diesem Zeitraum ist schon {titel} eingeplant. Bitte andere Daten wählen.": "{titel} is already planned for this period. Please choose other dates."
+  "In diesem Zeitraum ist schon {titel} eingeplant. Bitte andere Daten wählen.": "{titel} is already planned for this period. Please choose other dates.",
+  "und": "and",
+  "Viel los: Hauptferienzeit in {countries}.": "Busy: peak holiday season in {countries}.",
+  "Eher voll: Schulferien in {countries}.": "Fairly busy: school holidays in {countries}.",
+  "Ruhig: nur vereinzelt Schulferien.": "Quiet: only a few school holidays.",
+  "Früh buchen.": "Book early."
 };
 
 export default EN_TEXT;
