@@ -1,4 +1,4 @@
-const CACHE_NAME = 'camping-logbuch-shell-v13';
+const CACHE_NAME = 'camping-logbuch-shell-v14';
 const SHELL_FILES = ['/', '/bundle.js', '/manifest.json', '/icon.png'];
 
 self.addEventListener('install', (event) => {
