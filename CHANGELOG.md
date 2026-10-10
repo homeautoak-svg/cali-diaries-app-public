@@ -19,6 +19,10 @@
   and arrival on the same day are fine).
 - School holiday hints show only how busy it is ("Busy: peak holiday season in CH, DE and AT")
   instead of listing cantons and states.
+- Season planner: the minimum nights of a wish list place apply to the whole free gap between
+  two trips, so gaps that span the start or end of the summer holidays are no longer dropped.
+- Planning calendar: quiet free days are marked green, orange only from "fairly full"; a small
+  legend sits below the calendar.
 - Service worker cache raised to v14.
 
 ## 1.1.0 (09.10.2026)

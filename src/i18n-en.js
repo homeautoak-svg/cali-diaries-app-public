@@ -466,6 +466,8 @@ const EN_TEXT = {
   "Schulferien {countries}": "School holidays {countries}",
   "viel los · {n} N": "busy · {n} n",
   "viel los": "busy",
+  "ruhig": "quiet",
+  "eher voll": "fairly full",
   "{n} N frei": "{n} n free",
   "frei": "free",
   "Saison {year}": "Season {year}",
