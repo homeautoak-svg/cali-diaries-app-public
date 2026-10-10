@@ -493,7 +493,13 @@ const EN_TEXT = {
   "Saison": "Season",
   "Schulferien im Kalender": "School holidays in the calendar",
   "Ferien und Feiertage dieser Länder erscheinen im Kalender und in der Saisonplanung.": "School and public holidays of these countries appear in the calendar and the season planner.",
-  "Eingeplant": "Planned"
+  "Eingeplant": "Planned",
+  "Kantonen": "cantons",
+  "Bundesländern": "states",
+  "Regionen": "regions",
+  "ganz {land}": "all of {land}",
+  "{n} von {total} {regionen} ({land})": "{n} of {total} {regionen} ({land})",
+  "In diesem Zeitraum ist schon {titel} eingeplant. Bitte andere Daten wählen.": "{titel} is already planned for this period. Please choose other dates."
 };
 
 export default EN_TEXT;
