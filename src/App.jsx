@@ -3400,25 +3400,40 @@ function occupiedNightsMap(trips) {
   return map;
 }
 
-// Freie Abschnitte im Jahr, getrennt nach "ruhig" (Stufe 0 bis 1) und "viel los" (ab Stufe 2),
-// jeweils mit mindestens minNights Naechten. Vergangene Tage zaehlen nicht.
+// Farbe im Einplanen-Kalender: wie auf dem Brett gilt Stufe 0 bis 1 als ruhig (gruen),
+// ab Stufe 2 eher voll bzw. viel los (orange).
+function planLoadColor(level) {
+  if (level >= 3) return HOLIDAY_LEVEL_COLORS[3];
+  if (level === 2) return HOLIDAY_LEVEL_COLORS[2];
+  return '#8DBB8A';
+}
+
+// Freie Abschnitte im Jahr, getrennt nach "ruhig" (Stufe 0 bis 1) und "viel los" (ab Stufe 2).
+// Die Mindestdauer gilt fuer die ganze freie Luecke zwischen zwei Trips, nicht fuer die
+// einzelnen ruhig/viel-los-Abschnitte darin. Vergangene Tage zaehlen nicht.
 function freeRuns(year, occupied, holidays, minNights) {
   const runs = [];
   const today = todayISO();
   let iso = `${year}-01-01` < today ? today : `${year}-01-01`;
   const end = `${year}-12-31`;
-  let cur = null;
-  const close = () => { if (cur && cur.nights >= minNights) runs.push(cur); cur = null; };
+  let gap = [];   // Abschnitte der aktuellen freien Luecke
+  let gapNights = 0;
+  const closeGap = () => {
+    if (gapNights >= minNights) gap.forEach(r => runs.push({ ...r, gapNights }));
+    gap = []; gapNights = 0;
+  };
   while (iso <= end) {
-    if (occupied.has(iso)) close();
+    if (occupied.has(iso)) closeGap();
     else {
       const busy = holidayLevel(holidays, iso) >= 2;
+      const cur = gap[gap.length - 1];
       if (cur && cur.busy === busy) { cur.nights += 1; cur.last = iso; }
-      else { close(); cur = { start: iso, last: iso, nights: 1, busy }; }
+      else gap.push({ start: iso, last: iso, nights: 1, busy });
+      gapNights += 1;
     }
     iso = addDaysISO(iso, 1);
   }
-  close();
+  closeGap();
   return runs;
 }
 
@@ -3719,11 +3734,22 @@ function PlanModal({ year, month, startHint, wish, trips, holidays: initialHolid
                   border: inRange ? '1.5px solid var(--forest)' : trip ? tripStyle.border : '1.5px solid transparent'
                 }}>
                   {d}
-                  {level > 0 && <span aria-hidden="true" style={{ position: 'absolute', left: 3, right: 3, bottom: 2, height: 4, borderRadius: 2, background: HOLIDAY_LEVEL_COLORS[level] }} />}
+                  {!past && !inRange && (level >= 2 || (!trip && holidays)) && (
+                    <span aria-hidden="true" style={{ position: 'absolute', left: 3, right: 3, bottom: 2, height: 4, borderRadius: 2, background: planLoadColor(level) }} />
+                  )}
                 </button>
               );
             })}
           </div>
+          {holidays && holidays.size > 0 && (
+            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', fontSize: 12, color: 'var(--muted)', marginTop: 8 }}>
+              {[[0, tr('ruhig')], [2, tr('eher voll')], [3, tr('viel los')]].map(([l, label]) => (
+                <span key={l} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                  <span style={{ width: 16, height: 5, borderRadius: 3, background: planLoadColor(l) }} />{label}
+                </span>
+              ))}
+            </div>
+          )}
           {!arrival && <p style={{ fontSize: 13, color: 'var(--muted)', margin: '10px 0 0' }}>{tr('Anreisetag antippen.')}</p>}
         </div>
 
