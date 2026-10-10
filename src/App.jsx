@@ -3528,21 +3528,11 @@ function SeasonBoard({ trips, wishlist, navigate, onPlanned }) {
   const holidays = useHolidays([year]);
   const selectedWish = wishlist.find(w => w.id === selectedId) || null;
 
-  const yearTrips = trips.filter(t => t.datum_von && (t.datum_von.startsWith(String(year)) || (t.datum_bis || '').startsWith(String(year))));
-  const nights = yearTrips.reduce((s, t) => s + Math.max(0, daysBetween(t.datum_von, t.datum_bis)), 0);
-  const open = yearTrips.filter(t => !isConfirmed(t)).length;
   const occupied = useMemo(() => occupiedNightsMap(trips), [trips]);
   const runs = useMemo(() => selectedWish ? freeRuns(year, occupied, holidays, selectedWish.min_naechte || 1) : [],
     [selectedWish, year, occupied, holidays]);
   const lastMonth = 11;
   const firstMonth = year === now.getFullYear() ? now.getMonth() : 0;
-
-  const stat = (value, label) => (
-    <div style={{ flex: 1, background: '#FFFFFF', border: '1px solid var(--border)', borderRadius: 12, padding: '8px 10px', minWidth: 0 }}>
-      <div style={{ fontSize: 18, fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>{value}</div>
-      <div style={{ fontSize: 12, color: 'var(--muted)' }}>{label}</div>
-    </div>
-  );
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -3553,12 +3543,6 @@ function SeasonBoard({ trips, wishlist, navigate, onPlanned }) {
             style={{ ...iconButtonStyle, opacity: year <= now.getFullYear() ? 0.35 : 1 }}><ChevronLeft size={20} /></button>
           <button onClick={() => setYear(y => y + 1)} aria-label={tr('Nächstes Jahr')} style={iconButtonStyle}><ChevronRight size={20} /></button>
         </span>
-      </div>
-
-      <div style={{ display: 'flex', gap: 8 }}>
-        {stat(yearTrips.length, yearTrips.length === 1 ? tr('Trip') : tr('Trips'))}
-        {stat(nights, tr('Nächte'))}
-        {stat(open, tr('nicht bestätigt'))}
       </div>
 
       {wishlist.length > 0 && (
