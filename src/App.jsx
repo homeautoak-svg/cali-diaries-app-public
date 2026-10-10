@@ -470,31 +470,18 @@ function holidayLevel(index, iso) {
 }
 
 // Kurztext, wer an einem Tag Ferien hat, z.B. "DE: BY, BW · CH: 12/26".
-function countryName(code) {
-  try {
-    const name = new Intl.DisplayNames([lang()], { type: 'region' }).of(code);
-    if (name) return name;
-  } catch { /* aeltere Browser */ }
-  return code;
+function joinWithAnd(list) {
+  if (list.length <= 1) return list.join('');
+  return `${list.slice(0, -1).join(', ')} ${tr('und')} ${list[list.length - 1]}`;
 }
 
-// Bezeichnung der Regionen eines Landes in der Mehrzahl (Kantone, Bundeslaender, sonst Regionen).
-function regionWord(code) {
-  if (code === 'CH') return tr('Kantonen');
-  if (code === 'DE' || code === 'AT') return tr('Bundesländern');
-  return tr('Regionen');
-}
-
-// Lesbarer Text, wer an einem Tag Schulferien hat, z.B. "7 von 26 Kantonen (Schweiz) ·
-// BY, BW (Deutschland)". Bis drei Regionen werden mit Kuerzel genannt, sonst gezaehlt.
-function schoolHolidaySummary(info) {
-  if (!info) return '';
-  return Object.entries(info.school).map(([c, v]) => {
-    const land = countryName(c);
-    if (v.all) return tr('ganz {land}', { land });
-    if (v.regions.length <= 3) return `${v.regions.map(r => r.split('-')[1] || r).join(', ')} (${land})`;
-    return tr('{n} von {total} {regionen} ({land})', { n: v.regions.length, total: v.total, regionen: regionWord(c), land });
-  }).join(' · ');
+// Kurzer Satz zur Auslastung eines Tages anhand der Schulferien, ohne Regionen-Details.
+function holidayLoadText(info) {
+  if (!info || !info.level) return '';
+  const countries = joinWithAnd(Object.keys(info.school));
+  if (info.level >= 3) return tr('Viel los: Hauptferienzeit in {countries}.', { countries });
+  if (info.level === 2) return tr('Eher voll: Schulferien in {countries}.', { countries });
+  return tr('Ruhig: nur vereinzelt Schulferien.');
 }
 
 // Trips, deren Naechte sich mit dem Zeitraum von (Anreise) bis bis (Abreise) ueberschneiden.
@@ -3219,7 +3206,7 @@ function MonthCard({ year, month, trips, onSelect, holidays }) {
         <div style={{ fontSize: 13, color: 'var(--text)', background: 'var(--card-alt)', border: '1px solid var(--border)', borderRadius: 10, padding: '8px 10px', marginBottom: 12, lineHeight: 1.45 }}>
           <b>{formatDate(infoDay)}</b>
           {publicHolidaySummary(info) && <div>{tr('Feiertag: {name}', { name: publicHolidaySummary(info) })}</div>}
-          {schoolHolidaySummary(info) && <div>{tr('Schulferien: {regions}', { regions: schoolHolidaySummary(info) })}</div>}
+          {holidayLoadText(info) && <div>{holidayLoadText(info)}</div>}
         </div>
       )}
       {tripsThisMonth.length > 0 ? (
@@ -3672,8 +3659,8 @@ function PlanModal({ year, month, startHint, wish, trips, holidays: initialHolid
     if (pub.length) hints.push({ warn: true, text: tr('Feiertag: {name}', { name: pub.join(' · ') }) });
     let peak = null;
     eachDayISO(arrival, lastNight, (iso) => { const info = holidays?.get(iso); if (info && (!peak || info.score > peak.score)) peak = info; });
-    if (peak && peak.level >= 2) hints.push({ warn: true, text: tr('Schulferien: {regions}. Früh buchen.', { regions: schoolHolidaySummary(peak) }) });
-    else if (peak && peak.level === 1) hints.push({ warn: false, text: tr('Schulferien: {regions}', { regions: schoolHolidaySummary(peak) }) });
+    if (peak && peak.level >= 2) hints.push({ warn: true, text: `${holidayLoadText(peak)} ${tr('Früh buchen.')}` });
+    else if (peak && peak.level === 1) hints.push({ warn: false, text: holidayLoadText(peak) });
     if (wish?.buchungsfenster_datum) hints.push({ warn: false, text: tr('Buchungsfenster öffnet {buchungsfenster_datum}', { buchungsfenster_datum: formatDate(wish.buchungsfenster_datum) }) });
   }
 
