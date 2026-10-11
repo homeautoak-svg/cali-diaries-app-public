@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef, useContext } from 'react';
 import L from 'leaflet';
 import EN_TEXT from './i18n-en.js';
 import {
@@ -1671,6 +1671,28 @@ const glanceCardStyle = {
 const glanceValueStyle = { fontSize: 21, fontWeight: 600, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' };
 
 // Untere Navigationsleiste mit den fuenf Hauptbereichen.
+// --- Laptop-Ansicht (seit v4.15) ---
+// Ab 1000 Pixel Fensterbreite: Seitenleiste statt Navigationsleiste unten, Trips als Liste und
+// Detail nebeneinander. Ab 1280 Pixel zusaetzlich zweispaltige Detailansichten. Das iPhone
+// bleibt unveraendert.
+const DESKTOP_QUERY = '(min-width: 1000px)';
+const WIDE_QUERY = '(min-width: 1280px)';
+function useMediaQuery(query) {
+  const get = () => typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia(query).matches;
+  const [matches, setMatches] = useState(get);
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return undefined;
+    const m = window.matchMedia(query);
+    const onChange = () => setMatches(m.matches);
+    onChange();
+    if (m.addEventListener) m.addEventListener('change', onChange); else m.addListener(onChange);
+    return () => { if (m.removeEventListener) m.removeEventListener('change', onChange); else m.removeListener(onChange); };
+  }, [query]);
+  return matches;
+}
+const LayoutContext = React.createContext({ desktop: false, wide: false });
+const useLayout = () => useContext(LayoutContext);
+
 const TABS = [
   { key: 'home', get label() { return tr('Übersicht'); }, icon: House },
   { key: 'trips', get label() { return tr('Trips'); }, icon: Compass },
@@ -1701,6 +1723,52 @@ function TabBar({ active, onSelect }) {
         );
       })}
     </nav>
+  );
+}
+
+// Navigation am Laptop: Seitenleiste links mit den gleichen Bereichen wie die Leiste unten.
+function Sidebar({ active, settingsActive, onSelect, onSettings }) {
+  const item = (isActive) => ({
+    display: 'flex', alignItems: 'center', gap: 12, width: '100%', height: 44, padding: '0 12px', borderRadius: 10,
+    border: 'none', cursor: 'pointer', fontFamily: 'var(--font-body)', fontSize: 15, textAlign: 'left', marginBottom: 2,
+    background: isActive ? 'var(--forest)' : 'none', color: isActive ? '#FFFFFF' : 'var(--text)', fontWeight: isActive ? 600 : 400
+  });
+  return (
+    <nav data-tour="nav" aria-label={tr('Hauptnavigation')} style={{
+      width: 232, flexShrink: 0, background: '#F7FAF5', borderRight: '1px solid var(--border)', display: 'flex',
+      flexDirection: 'column', padding: '22px 14px 18px', boxSizing: 'border-box', overflowY: 'auto'
+    }}>
+      <div style={{ padding: '0 12px 22px' }}>
+        <div style={{ fontFamily: 'var(--font-display)', fontSize: 22, fontWeight: 600, color: 'var(--forest-dark)' }}>Camping Diary</div>
+        {APP_CONFIG.vehicleName && <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 2 }}>{APP_CONFIG.vehicleName}</div>}
+      </div>
+      {TABS.map(t => {
+        const Icon = t.icon;
+        const isActive = !settingsActive && active === t.key;
+        return (
+          <button key={t.key} onClick={() => onSelect(t.key)} aria-current={isActive ? 'page' : undefined} style={item(isActive)}>
+            <Icon size={20} color="currentColor" />{t.label}
+          </button>
+        );
+      })}
+      <div style={{ flex: 1 }} />
+      <button onClick={onSettings} aria-current={settingsActive ? 'page' : undefined} style={item(settingsActive)}>
+        <Settings size={20} />{tr('Einstellungen')}
+      </button>
+    </nav>
+  );
+}
+
+// Rechte Seite am Laptop, solange in der Trip-Liste nichts gewaehlt ist.
+function SplitPlaceholder({ onAdd }) {
+  return (
+    <div style={{ minHeight: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 10, padding: 40, color: 'var(--muted)', textAlign: 'center' }}>
+      <Compass size={38} style={{ opacity: 0.45 }} />
+      <p style={{ fontSize: 15, margin: 0 }}>{tr('Einen Trip in der Liste auswählen.')}</p>
+      <button onClick={onAdd} style={{ ...primaryButtonStyle, display: 'inline-flex', marginTop: 6 }}>
+        <Plus size={18} />{' '}{tr('Trip planen')}
+      </button>
+    </div>
   );
 }
 
@@ -2394,6 +2462,7 @@ function EntryTodosSection({ entry, onRefresh }) {
 }
 
 function EntryDetail({ entry, onBack, onEdit, onView, onDeleted, onLessonChanged, onRefreshEntry }) {
+  const { desktop, wide } = useLayout();
   const [deleting, setDeleting] = useState(false);
   const [blogLoading, setBlogLoading] = useState(false);
   const [blogOpen, setBlogOpen] = useState(false);
@@ -2496,6 +2565,25 @@ function EntryDetail({ entry, onBack, onEdit, onView, onDeleted, onLessonChanged
     }
   }
 
+  const infoRows = (
+    <>
+        <InfoRow icon={Calendar} label={tr('Zeitraum')}
+          value={`${formatDate(entry.datum_von)}${entry.datum_bis ? ' ' + tr('bis') + ' ' + formatDate(entry.datum_bis) : ''}`} />
+        {entry.stellplatzgroesse && <InfoRow icon={Ruler} label={tr('Stellplatzgrösse')} value={tr(entry.stellplatzgroesse)} />}
+        {entry.wetter && <InfoRow icon={Cloud} label={tr('Wetter')} value={entry.wetter} />}
+        {entry.kosten_pro_nacht != null && entry.kosten_pro_nacht !== '' && (
+          <InfoRow icon={Wallet} label={tr('Kosten pro Nacht')} value={`${cur()} ${Number(entry.kosten_pro_nacht).toFixed(2)}`} />
+        )}
+        {entry.kosten_restaurant != null && entry.kosten_restaurant !== '' && (
+          <InfoRow icon={Wallet} label={tr('Kosten Restaurant')} value={`${cur()} ${Number(entry.kosten_restaurant).toFixed(2)}`} />
+        )}
+        {entry.kosten_aktivitaeten != null && entry.kosten_aktivitaeten !== '' && (
+          <InfoRow icon={Wallet} label={tr('Kosten Aktivitäten')} value={`${cur()} ${Number(entry.kosten_aktivitaeten).toFixed(2)}`} />
+        )}
+        {entry.kilometerstand != null && <InfoRow icon={Gauge} label={tr('Kilometerstand')} value={`${entry.kilometerstand.toLocaleString(numLocale())} km`} />}
+    </>
+  );
+
   return (
     <div style={{ minHeight: '100%', background: 'var(--bg)', color: 'var(--text)', paddingBottom: 40 }}>
       <div style={natureHeaderBarStyle}>
@@ -2516,7 +2604,7 @@ function EntryDetail({ entry, onBack, onEdit, onView, onDeleted, onLessonChanged
         <div style={{ display: 'flex', gap: 8, overflowX: 'auto', padding: '14px 14px 0' }}>
           {entry.photos.map(p => (
             <img key={p.id} src={p.url} alt="" onClick={() => setLightboxUrl(p.url)}
-              style={{ width: 150, height: 150, objectFit: 'cover', borderRadius: 12, flexShrink: 0, cursor: 'zoom-in' }} />
+              style={{ width: desktop ? 220 : 150, height: desktop ? 220 : 150, objectFit: 'cover', borderRadius: 12, flexShrink: 0, cursor: 'zoom-in' }} />
           ))}
         </div>
       )}
@@ -2538,9 +2626,10 @@ function EntryDetail({ entry, onBack, onEdit, onView, onDeleted, onLessonChanged
         </div>
       )}
 
-      <div style={{ padding: 18, display: 'flex', flexDirection: 'column', gap: 18 }}>
+      <div style={wide ? { padding: '20px 24px', display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 360px', gap: 28, alignItems: 'start' } : undefined}>
+      <div style={{ padding: wide ? 0 : 18, display: 'flex', flexDirection: 'column', gap: 18, minWidth: 0 }}>
         <div>
-          <h1 style={{ fontFamily: 'var(--font-display)', fontSize: 26, margin: '0 0 6px' }}>{entry.campingplatz}</h1>
+          <h1 style={{ fontFamily: 'var(--font-display)', fontSize: wide ? 30 : 26, margin: '0 0 6px' }}>{entry.campingplatz}</h1>
           {entry.ort && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--muted)', fontSize: 15 }}>
               <MapPin size={15} /> <CountryFlag ort={entry.ort} />{entry.ort}
@@ -2556,20 +2645,7 @@ function EntryDetail({ entry, onBack, onEdit, onView, onDeleted, onLessonChanged
 
         <FlameRating value={entry.bewertung || 0} size={20} readOnly />
 
-        <InfoRow icon={Calendar} label={tr('Zeitraum')}
-          value={`${formatDate(entry.datum_von)}${entry.datum_bis ? ' ' + tr('bis') + ' ' + formatDate(entry.datum_bis) : ''}`} />
-        {entry.stellplatzgroesse && <InfoRow icon={Ruler} label={tr('Stellplatzgrösse')} value={tr(entry.stellplatzgroesse)} />}
-        {entry.wetter && <InfoRow icon={Cloud} label={tr('Wetter')} value={entry.wetter} />}
-        {entry.kosten_pro_nacht != null && entry.kosten_pro_nacht !== '' && (
-          <InfoRow icon={Wallet} label={tr('Kosten pro Nacht')} value={`${cur()} ${Number(entry.kosten_pro_nacht).toFixed(2)}`} />
-        )}
-        {entry.kosten_restaurant != null && entry.kosten_restaurant !== '' && (
-          <InfoRow icon={Wallet} label={tr('Kosten Restaurant')} value={`${cur()} ${Number(entry.kosten_restaurant).toFixed(2)}`} />
-        )}
-        {entry.kosten_aktivitaeten != null && entry.kosten_aktivitaeten !== '' && (
-          <InfoRow icon={Wallet} label={tr('Kosten Aktivitäten')} value={`${cur()} ${Number(entry.kosten_aktivitaeten).toFixed(2)}`} />
-        )}
-        {entry.kilometerstand != null && <InfoRow icon={Gauge} label={tr('Kilometerstand')} value={`${entry.kilometerstand.toLocaleString(numLocale())} km`} />}
+        {!wide && infoRows}
 
         {entry.lessons?.length > 0 && (
           <div>
@@ -2611,6 +2687,12 @@ function EntryDetail({ entry, onBack, onEdit, onView, onDeleted, onLessonChanged
           {blogLoading ? <Loader2 size={16} className="spin" /> : <Sparkles size={16} />}
           {tr('Blogbeitrag erstellen')}
         </button>}
+      </div>
+      {wide && (
+        <div style={{ border: '1px solid var(--border)', borderRadius: 14, padding: 16, display: 'flex', flexDirection: 'column', gap: 16 }}>
+          {infoRows}
+        </div>
+      )}
       </div>
 
       {blogOpen && (
@@ -3144,6 +3226,7 @@ function tripForDate(trips, dateStr) {
 }
 
 function MonthCard({ year, month, trips, onSelect, holidays }) {
+  const { desktop } = useLayout();
   const [infoDay, setInfoDay] = useState(null);
   const firstDay = new Date(year, month, 1);
   const startWeekday = (firstDay.getDay() + 6) % 7; // Montag = 0
@@ -3166,7 +3249,7 @@ function MonthCard({ year, month, trips, onSelect, holidays }) {
 
   return (
     <div style={{
-      minWidth: '100%', scrollSnapAlign: 'center', flexShrink: 0, boxSizing: 'border-box',
+      minWidth: desktop ? 0 : '100%', scrollSnapAlign: 'center', flexShrink: 0, boxSizing: 'border-box',
       padding: '0 4px'
     }}>
       <div style={{ fontFamily: 'var(--font-display)', fontSize: 18, color: 'var(--forest)', textAlign: 'center', marginBottom: 12, textTransform: 'capitalize' }}>
@@ -3250,6 +3333,7 @@ function HolidayLegend() {
 }
 
 function TripCalendarView({ trips, onSelect }) {
+  const { desktop } = useLayout();
   const months = useMemo(() => {
     const now = new Date();
     const start = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -3272,7 +3356,9 @@ function TripCalendarView({ trips, onSelect }) {
 
   return (
     <div>
-      <div style={{
+      <div style={desktop ? {
+        display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '24px 28px', padding: '4px 18px 18px'
+      } : {
         display: 'flex', overflowX: 'auto', scrollSnapType: 'x mandatory', gap: 0,
         padding: '4px 18px 12px'
       }}>
@@ -3299,7 +3385,7 @@ function RatingBadge({ bewertung }) {
 }
 
 // Karte fuer einen geplanten oder laufenden Trip mit Datumsblock links.
-function PlannedTripCard({ trip, onClick }) {
+function PlannedTripCard({ trip, onClick, selected }) {
   const phase = tripPhase(trip);
   const active = phase.phase === 'unterwegs';
   const [, m, d] = (trip.datum_von || '--').split('-');
@@ -3310,6 +3396,7 @@ function PlannedTripCard({ trip, onClick }) {
       display: 'flex', alignItems: 'center', gap: 12, padding: 12, borderRadius: 16, width: '100%',
       background: active ? '#E3EEDF' : confirmed ? 'var(--card-alt)' : '#FFFFFF',
       border: confirmed ? `1px solid ${active ? '#9DBB9F' : '#C9DBC6'}` : `1.5px dashed ${trip.status === 'idee' ? '#9AAE9C' : 'var(--forest)'}`,
+      boxShadow: selected ? '0 0 0 2px var(--forest)' : 'none',
       cursor: 'pointer', textAlign: 'left', fontFamily: 'var(--font-body)', color: 'var(--text)'
     }}>
       <span style={{
@@ -3340,14 +3427,15 @@ function PlannedTripCard({ trip, onClick }) {
 }
 
 // Kompakte Zeile fuer einen abgeschlossenen Trip (Erfahrungsbericht).
-function EntryRow({ entry, onClick, last }) {
+function EntryRow({ entry, onClick, last, selected }) {
   const titel = entry.campingplatz || entry.ort || tr('Ohne Titel');
   const ortDoppelt = entry.ort && titel.toLowerCase().includes(entry.ort.toLowerCase());
   const meta = [ortDoppelt ? null : entry.ort, shortRange(entry.datum_von, entry.datum_bis)].filter(Boolean).join(' · ');
   return (
     <button onClick={onClick} style={{
-      display: 'flex', alignItems: 'center', gap: 12, padding: '10px 0', width: '100%', background: 'none', border: 'none',
-      borderBottom: last ? 'none' : '1px solid #EEF2EB', cursor: 'pointer', textAlign: 'left',
+      display: 'flex', alignItems: 'center', gap: 12, padding: selected ? '10px 8px' : '10px 0', width: selected ? 'calc(100% + 16px)' : '100%',
+      margin: selected ? '0 -8px' : 0, borderRadius: selected ? 12 : 0, background: selected ? '#E3EEDF' : 'none', border: 'none',
+      borderBottom: last || selected ? 'none' : '1px solid #EEF2EB', cursor: 'pointer', textAlign: 'left',
       fontFamily: 'var(--font-body)', color: 'var(--text)'
     }}>
       {entry.photos?.[0] ? (
@@ -3613,6 +3701,7 @@ function SeasonBoard({ trips, wishlist, navigate, onPlanned }) {
 }
 
 function PlanModal({ year, month, startHint, wish, trips, holidays: initialHolidays, onClose, onSaved }) {
+  const { desktop } = useLayout();
   const today = todayISO();
   const [view, setView] = useState({ year, month });
   const [arrival, setArrival] = useState(startHint && startHint >= today ? startHint : null);
@@ -3691,11 +3780,13 @@ function PlanModal({ year, month, startHint, wish, trips, holidays: initialHolid
   return (
     <div onClick={onClose} style={{
       position: 'fixed', inset: 0, background: 'rgba(30,43,31,0.45)', zIndex: 500, display: 'flex',
-      alignItems: 'flex-end', justifyContent: 'center', animation: 'fadeIn 0.15s ease-out'
+      alignItems: desktop ? 'center' : 'flex-end', justifyContent: 'center', animation: 'fadeIn 0.15s ease-out',
+      padding: desktop ? 24 : 0
     }}>
       <div onClick={e => e.stopPropagation()} role="dialog" aria-label={tr('Einplanen')} style={{
-        background: '#FFFFFF', width: '100%', maxWidth: 420, maxHeight: '92%', overflowY: 'auto', borderRadius: '20px 20px 0 0',
-        padding: '16px 18px calc(18px + env(safe-area-inset-bottom))', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: 14
+        background: '#FFFFFF', width: '100%', maxWidth: desktop ? 480 : 420, maxHeight: desktop ? '90vh' : '92%', overflowY: 'auto',
+        borderRadius: desktop ? 20 : '20px 20px 0 0', boxShadow: desktop ? '0 20px 50px rgba(0,0,0,0.3)' : 'none',
+        padding: desktop ? '18px 22px 22px' : '16px 18px calc(18px + env(safe-area-inset-bottom))', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: 14
       }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <span style={{ fontFamily: 'var(--font-display)', fontSize: 19 }}>{wish ? tr('{name} einplanen', { name: wish.name }) : tr('Trip einplanen')}</span>
@@ -3807,8 +3898,13 @@ const tripsH2Style = { margin: 0, fontSize: 13, fontWeight: 600, display: 'flex'
 
 const filterLabelStyle = { fontSize: 12, fontWeight: 600, color: 'var(--muted)' };
 
-function TripsHub({ trips, entries, wishlist, loading, error, navigate, onPlanned }) {
-  const [mode, setMode] = useState('liste');
+function TripsHub({ trips, entries, wishlist, loading, error, navigate, onPlanned, mode: modeProp, onModeChange, selectedTripId, selectedEntryId }) {
+  // Der Modus (Liste, Kalender, Saison) kann von aussen gefuehrt werden, damit er beim Zurueck
+  // aus einem Trip und in der Laptop-Ansicht erhalten bleibt.
+  const [modeLocal, setModeLocal] = useState('liste');
+  const mode = modeProp || modeLocal;
+  const setMode = onModeChange || setModeLocal;
+  const { desktop } = useLayout();
   const [filterOpen, setFilterOpen] = useState(false);
   const [search, setSearch] = useState('');
   const [minRating, setMinRating] = useState(0);
@@ -3887,9 +3983,15 @@ function TripsHub({ trips, entries, wishlist, loading, error, navigate, onPlanne
             }}>{activeFilterCount}</span>
           )}
         </button>
-        <button onClick={() => navigate({ name: 'addTrip' })} aria-label={tr('Neuer Trip')} style={headerPrimaryStyle}>
-          <Plus size={20} />
-        </button>
+        {desktop ? (
+          <button onClick={() => navigate({ name: 'addTrip' })} style={{ ...headerPrimaryStyle, width: 'auto', padding: '0 14px', gap: 6, fontSize: 14, fontWeight: 600, fontFamily: 'var(--font-body)' }}>
+            <Plus size={18} />{tr('Neuer Trip')}
+          </button>
+        ) : (
+          <button onClick={() => navigate({ name: 'addTrip' })} aria-label={tr('Neuer Trip')} style={headerPrimaryStyle}>
+            <Plus size={20} />
+          </button>
+        )}
       </TabHeader>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 16, padding: '4px 18px 32px' }}>
@@ -3995,13 +4097,13 @@ function TripsHub({ trips, entries, wishlist, loading, error, navigate, onPlanne
             {unterwegs.length > 0 && (
               <section style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 <h2 style={{ ...tripsH2Style, color: 'var(--forest)' }}><Compass size={15} />{tr('Unterwegs')}</h2>
-                {unterwegs.map(t => <PlannedTripCard key={t.id} trip={t} onClick={() => navigate({ name: 'tripDetail', tripId: t.id })} />)}
+                {unterwegs.map(t => <PlannedTripCard key={t.id} trip={t} selected={t.id === selectedTripId} onClick={() => navigate({ name: 'tripDetail', tripId: t.id })} />)}
               </section>
             )}
 
             {(geplant.length > 0 || activeFilterCount === 0) && <section style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               <h2 style={{ ...tripsH2Style, color: 'var(--forest)' }}><CalendarDays size={15} />{tr('Geplant')}{geplant.length ? ` · ${geplant.length}` : ''}</h2>
-              {geplant.map(t => <PlannedTripCard key={t.id} trip={t} onClick={() => navigate({ name: 'tripDetail', tripId: t.id })} />)}
+              {geplant.map(t => <PlannedTripCard key={t.id} trip={t} selected={t.id === selectedTripId} onClick={() => navigate({ name: 'tripDetail', tripId: t.id })} />)}
               {geplant.length === 0 && activeFilterCount === 0 && (
                 <div style={{ border: '1.5px dashed #BFD0BC', borderRadius: 16, padding: 14, display: 'flex', alignItems: 'center', gap: 12 }}>
                   <span style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 2 }}>
@@ -4024,7 +4126,7 @@ function TripsHub({ trips, entries, wishlist, loading, error, navigate, onPlanne
                 {ohneBericht.map(t => (
                   <button key={t.id} onClick={() => navigate({ name: 'tripDetail', tripId: t.id })} style={{
                     display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px', borderRadius: 14, background: '#FBF4DC',
-                    border: '1px solid #EAD48A', cursor: 'pointer', textAlign: 'left', fontFamily: 'var(--font-body)', color: 'var(--text)', width: '100%'
+                    border: '1px solid #EAD48A', boxShadow: t.id === selectedTripId ? '0 0 0 2px #B8901F' : 'none', cursor: 'pointer', textAlign: 'left', fontFamily: 'var(--font-body)', color: 'var(--text)', width: '100%'
                   }}>
                     <span style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
                       <span style={{ fontSize: 15, fontWeight: 600 }}>{t.titel}</span>
@@ -4045,7 +4147,7 @@ function TripsHub({ trips, entries, wishlist, loading, error, navigate, onPlanne
                     <CheckCircle2 size={15} />{tr('Abgeschlossen')}{' '}{year} · {list.length} {list.length === 1 ? tr('Trip') : tr('Trips')}{naechte ? tr(' · {naechte} Nächte', { naechte: naechte }) : ''}
                   </h2>
                   {list.map((e, i) => (
-                    <EntryRow key={e.id} entry={e} last={i === list.length - 1} onClick={() => navigate({ name: 'detail', entry: e })} />
+                    <EntryRow key={e.id} entry={e} last={i === list.length - 1} selected={e.id === selectedEntryId} onClick={() => navigate({ name: 'detail', entry: e })} />
                   ))}
                 </section>
               );
@@ -6496,6 +6598,7 @@ const tripLinkChipStyle = {
 };
 
 function TripDetail({ tripId, trips, entries, lessons, onRefresh, onBack, onEdit, onDeleted, onCreateEntry, onViewEntry, onAddLesson }) {
+  const { wide } = useLayout();
   const trip = trips.find(t => t.id === tripId);
   const today = todayISO();
   const phase = trip ? tripPhase(trip, today) : null;
@@ -6583,7 +6686,10 @@ function TripDetail({ tripId, trips, entries, lessons, onRefresh, onBack, onEdit
         </button>
       </div>
 
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 16, padding: '0 18px 28px' }}>
+      <div style={wide
+        ? { flex: 1, display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: '16px 28px', padding: '0 24px 28px', alignItems: 'start' }
+        : { flex: 1, display: 'flex', flexDirection: 'column', gap: 16, padding: '0 18px 28px' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16, minWidth: 0 }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           <span style={{
             alignSelf: 'flex-start', fontSize: 12, fontWeight: 600, padding: '4px 10px', borderRadius: 999,
@@ -6659,8 +6765,10 @@ function TripDetail({ tripId, trips, entries, lessons, onRefresh, onBack, onEdit
             <ChevronRight size={18} color="var(--muted)" />
           </button>
         )}
+        </div>
 
-        <div role="tablist" style={{ display: 'flex', gap: 8, overflowX: 'auto', margin: '0 -18px', padding: '2px 18px' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16, minWidth: 0 }}>
+        <div role="tablist" style={{ display: 'flex', gap: 8, overflowX: 'auto', margin: wide ? 0 : '0 -18px', padding: wide ? '2px 0' : '2px 18px', flexWrap: wide ? 'wrap' : 'nowrap' }}>
           {subtabs.map(t => {
             const on = subtab === t.key;
             return (
@@ -6677,9 +6785,10 @@ function TripDetail({ tripId, trips, entries, lessons, onRefresh, onBack, onEdit
           {subtab === 'meals' && <MealsSection trip={trip} onRefresh={onRefresh} />}
           {subtab !== 'meals' && <ChecklistSection key={subtab} trip={trip} type={subtab} onRefresh={onRefresh} />}
         </div>
+        </div>
 
         <button onClick={remove} disabled={deleting} style={{
-          alignSelf: 'center', display: 'flex', alignItems: 'center', gap: 6, height: 44, padding: '0 8px', marginTop: 8,
+          alignSelf: 'center', justifySelf: 'center', gridColumn: '1 / -1', display: 'flex', alignItems: 'center', gap: 6, height: 44, padding: '0 8px', marginTop: 8,
           background: 'none', border: 'none', color: '#B3402A', fontSize: 14, cursor: 'pointer', fontFamily: 'var(--font-body)'
         }}>
           {deleting ? <Loader2 size={15} className="spin" /> : <Trash2 size={15} />}{' '}{tr('Trip löschen')}
@@ -7123,6 +7232,10 @@ export default function CampingTagebuch() {
   const [tripsError, setTripsError] = useState('');
   const [wishlistError, setWishlistError] = useState('');
   const [view, setView] = useState({ name: 'home' });
+  const [tripsMode, setTripsMode] = useState('liste');
+  const desktop = useMediaQuery(DESKTOP_QUERY);
+  const wide = useMediaQuery(WIDE_QUERY);
+  const layout = useMemo(() => ({ desktop, wide }), [desktop, wide]);
   const [certIssued, setCertIssued] = useState(null);
   const [configLoaded, setConfigLoaded] = useState(false);
   const [configVersion, setConfigVersion] = useState(0);
@@ -7418,35 +7531,44 @@ export default function CampingTagebuch() {
     loadEntries(); loadLessons(); loadTrips(); loadWishlist();
   }
 
-  return (
-    <div className="app-shell" style={{
-      // Fest am Bildschirm verankert (Position und Hoehe in .app-shell, siehe Style-Block): so kann
-      // iOS die Seite selbst nicht mitscrollen, und die Navigationsleiste bleibt unten stehen.
-      ...theme, width: '100%', maxWidth: 420, margin: '0 auto',
-      display: 'flex', flexDirection: 'column',
-      fontFamily: 'var(--font-body)', boxShadow: '0 0 40px rgba(0,0,0,0.08)', background: 'var(--bg)'
-    }}>
-      <style>{`
-        @keyframes spin { to { transform: rotate(360deg); } }
-        .spin { animation: spin 0.8s linear infinite; }
-        @keyframes viewEnter { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
-        .view-transition { animation: viewEnter 0.22s ease-out; }
-        @keyframes toastIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
-        @keyframes skeletonPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
-        .skeleton { animation: skeletonPulse 1.4s ease-in-out infinite; }
-        @media (prefers-reduced-motion: reduce) { .skeleton, .view-transition { animation: none; } }
-        /* Die App fuellt genau das Fenster. Den Platz fuer die Home-Leiste deckt der Innenabstand
-           der Navigationsleiste ab (env(safe-area-inset-bottom)). */
-        .app-shell { position: fixed; top: 0; bottom: 0; left: 0; right: 0; }
-      `}</style>
-      <div ref={scrollRef} id="app-scroll" style={{
-        flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', position: 'relative',
-        overscrollBehaviorY: 'contain', WebkitOverflowScrolling: 'touch'
-      }}>
+  // Wechsel des Hauptbereichs: Trips beginnt dann wie bisher mit der Liste.
+  function selectTab(key) {
+    if (key === 'trips' && activeTab !== 'trips') setTripsMode('liste');
+    navigate({ name: key });
+  }
+
+  // Umschalten zwischen Liste, Kalender und Saison fuehrt immer zur Trips-Uebersicht zurueck,
+  // auch wenn am Laptop rechts gerade ein Trip offen ist.
+  function changeTripsMode(k) {
+    setTripsMode(k);
+    if (view.name !== 'trips') navigate({ name: 'trips' });
+  }
+
+  // Laptop: Trips-Liste links, gewaehlter Trip oder Bericht rechts (nur im Modus Liste).
+  const SPLIT_VIEWS = ['trips', 'tripDetail', 'detail', 'viewReport', 'add', 'edit', 'addTrip', 'editTrip'];
+  const split = desktop && tripsMode === 'liste' && SPLIT_VIEWS.includes(view.name);
+  const selectedTripId = view.name === 'tripDetail' ? view.tripId : view.name === 'editTrip' ? view.trip?.id : null;
+  const selectedEntryId = ['detail', 'viewReport', 'edit'].includes(view.name) ? view.entry?.id : null;
+  const tripsHub = (
+    <TripsHub trips={trips} entries={entries} wishlist={wishlist} loading={loading || tripsLoading}
+      error={error || tripsError} navigate={navigate} onPlanned={handlePlannedTrip}
+      mode={tripsMode} onModeChange={changeTripsMode} selectedTripId={selectedTripId} selectedEntryId={selectedEntryId} />
+  );
+  // Inhaltsbreite am Laptop: Kalender, Saison und Karte breit, alles andere als lesbare Spalte.
+  const contentMaxWidth = !desktop ? undefined
+    : split ? 980
+    : (view.name === 'trips' || view.name === 'map') ? 1240 : 860;
+  const viewKey = view.name + (view.entry?.id ?? view.tripId ?? view.trip?.id ?? '');
+  const scrollStyle = {
+    flex: 1, minHeight: 0, minWidth: 0, overflowY: 'auto', overflowX: 'hidden', position: 'relative',
+    overscrollBehaviorY: 'contain', WebkitOverflowScrolling: 'touch'
+  };
+  const content = (
+    <>
       <OfflineBanner />
       <ErrorBoundary onReset={() => setView({ name: 'home' })}>
-      <div key={view.name + (view.entry?.id ?? view.tripId ?? view.trip?.id ?? '')} className="view-transition" style={{ minHeight: '100%' }}>
+      <div key={viewKey} className="view-transition" style={{ minHeight: '100%', maxWidth: contentMaxWidth, margin: desktop ? '0 auto' : undefined }}>
+      {split && view.name === 'trips' && <SplitPlaceholder onAdd={() => navigate({ name: 'addTrip' })} />}
       {view.name === 'home' && (
         <HomeScreen trips={trips} entries={entries} wishlist={wishlist} loading={initialLoading} slow={slow} onRetry={retryAll}
           certWarning={certWarning} setupHint={configLoaded && setupIncomplete()} navigate={navigate} />
@@ -7457,10 +7579,7 @@ export default function CampingTagebuch() {
           onConfigChanged={onConfigChanged} onReplayOnboarding={replayOnboarding} />
       )}
 
-      {view.name === 'trips' && (
-        <TripsHub trips={trips} entries={entries} wishlist={wishlist} loading={loading || tripsLoading}
-          error={error || tripsError} navigate={navigate} onPlanned={handlePlannedTrip} />
-      )}
+      {view.name === 'trips' && !split && tripsHub}
 
       {view.name === 'wishlist' && (
         <WishlistView wishlist={wishlist} loading={wishlistLoading} error={wishlistError}
@@ -7573,9 +7692,50 @@ export default function CampingTagebuch() {
       )}
       </div>
       </ErrorBoundary>
-      </div>
+    </>
+  );
 
-      {showTabBar && <TabBar active={activeTab} onSelect={(key) => navigate({ name: key })} />}
+  return (
+    <LayoutContext.Provider value={layout}>
+    <div className="app-shell" style={{
+      // Fest am Bildschirm verankert (Position und Hoehe in .app-shell, siehe Style-Block): so kann
+      // iOS die Seite selbst nicht mitscrollen, und die Navigationsleiste bleibt unten stehen.
+      ...theme, width: '100%', maxWidth: desktop ? 'none' : 420, margin: '0 auto',
+      display: 'flex', flexDirection: desktop ? 'row' : 'column',
+      fontFamily: 'var(--font-body)', boxShadow: desktop ? 'none' : '0 0 40px rgba(0,0,0,0.08)', background: 'var(--bg)'
+    }}>
+      <style>{`
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .spin { animation: spin 0.8s linear infinite; }
+        @keyframes viewEnter { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+        .view-transition { animation: viewEnter 0.22s ease-out; }
+        @keyframes toastIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes skeletonPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+        .skeleton { animation: skeletonPulse 1.4s ease-in-out infinite; }
+        @media (prefers-reduced-motion: reduce) { .skeleton, .view-transition { animation: none; } }
+        /* Die App fuellt genau das Fenster. Den Platz fuer die Home-Leiste deckt der Innenabstand
+           der Navigationsleiste ab (env(safe-area-inset-bottom)). */
+        .app-shell { position: fixed; top: 0; bottom: 0; left: 0; right: 0; }
+      `}</style>
+
+      {desktop && (
+        <Sidebar active={activeTab} settingsActive={view.name === 'settings'}
+          onSelect={selectTab} onSettings={() => navigate({ name: 'settings' })} />
+      )}
+
+      {split ? (
+        <div style={{ flex: 1, minWidth: 0, display: 'flex' }}>
+          <div style={{ ...scrollStyle, flex: 'none', width: wide ? 440 : 400, borderRight: '1px solid var(--border)' }}>
+            {tripsHub}
+          </div>
+          <div ref={scrollRef} id="app-scroll" style={scrollStyle}>{content}</div>
+        </div>
+      ) : (
+        <div ref={scrollRef} id="app-scroll" style={scrollStyle}>{content}</div>
+      )}
+
+      {showTabBar && !desktop && <TabBar active={activeTab} onSelect={selectTab} />}
 
       <ToastHost />
       <ConfirmHost />
@@ -7584,5 +7744,6 @@ export default function CampingTagebuch() {
       {onboarding === 'cards' && <WelcomeCards onSkip={finishOnboarding} onFinish={startTour} />}
       {onboarding === 'tour' && view.name === 'home' && <SpotlightTour onDone={finishOnboarding} />}
     </div>
+    </LayoutContext.Provider>
   );
 }
