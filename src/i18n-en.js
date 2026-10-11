@@ -468,6 +468,7 @@ const EN_TEXT = {
   "viel los": "busy",
   "ruhig": "quiet",
   "eher voll": "fairly full",
+  "Einen Trip in der Liste auswählen.": "Select a trip from the list.",
   "{n} N frei": "{n} n free",
   "frei": "free",
   "Saison {year}": "Season {year}",

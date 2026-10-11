@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.3.0 (11.10.2026)
+
+- Laptop layout from a window width of 1000 px; phones are unchanged. Navigation moves to a
+  sidebar on the left (with settings at the bottom), the bottom bar is hidden.
+- Trips as list and detail side by side: the selected trip or report opens on the right and is
+  highlighted in the list. Editing, new trips and reports also open on the right.
+- From 1280 px trip and report details use two columns (trip: status, weather, report on the
+  left, lists on the right; report: facts card on the right). Larger report photos.
+- Calendar shows months in a grid; season planner, calendar and map use the full width, other
+  areas are a centred column. The planning sheet becomes a centred dialog.
+- Trips keeps the chosen mode (list, calendar, season) when opening a trip and going back.
+
 ## 1.2.0 (10.10.2026)
 
 - Season planner: new "Season" view under Trips with one timeline per month, all trips by
