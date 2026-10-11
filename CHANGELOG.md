@@ -1,5 +1,42 @@
 # Changelog
 
+## 1.3.0 (11.10.2026)
+
+- Laptop layout from a window width of 1000 px; phones are unchanged. Navigation moves to a
+  sidebar on the left (with settings at the bottom), the bottom bar is hidden.
+- Trips as list and detail side by side: the selected trip or report opens on the right and is
+  highlighted in the list. Editing, new trips and reports also open on the right.
+- From 1280 px trip and report details use two columns (trip: status, weather, report on the
+  left, lists on the right; report: facts card on the right). Larger report photos.
+- Calendar shows months in a grid; season planner, calendar and map use the full width, other
+  areas are a centred column. The planning sheet becomes a centred dialog.
+- Trips keeps the chosen mode (list, calendar, season) when opening a trip and going back.
+
+## 1.2.0 (10.10.2026)
+
+- Season planner: new "Season" view under Trips with one timeline per month, all trips by
+  status and a school holiday band. Pick a place from the wish list to see free gaps with at
+  least its minimum nights (green: quiet, yellow: busy). Tap a gap or month, choose the arrival
+  day and adjust the nights; hints show overlaps, too few nights, public and school holidays,
+  the booking window and the driving distance.
+- Trip status: idea, requested or confirmed. Unconfirmed trips are shown dashed and never
+  become "on the road" or "no report yet". Existing trips are migrated as confirmed. Trips keep
+  the booking window from the wish list, and the booking reminder on the overview covers them.
+- School and public holidays from the OpenHolidays API (openholidaysapi.org), fetched by the
+  server and cached per country and year for 30 days. Countries are configurable in the
+  settings (default CH, DE, AT). Tap a day in the calendar to see who is on holiday.
+- Wish list: new field for the minimum number of nights.
+- Trips can no longer overlap: occupied days cannot be picked in the season planner, and saving
+  is blocked in the planner and the trip form while the dates overlap another trip (departure
+  and arrival on the same day are fine).
+- School holiday hints show only how busy it is ("Busy: peak holiday season in CH, DE and AT")
+  instead of listing cantons and states.
+- Season planner: the minimum nights of a wish list place apply to the whole free gap between
+  two trips, so gaps that span the start or end of the summer holidays are no longer dropped.
+- Planning calendar: quiet free days are marked green, orange only from "fairly full"; a small
+  legend sits below the calendar.
+- Service worker cache raised to v14.
+
 ## 1.1.0 (09.10.2026)
 
 - Vehicle: new info line below odometer and mileage budget, always visible. It shows length,
