@@ -30,6 +30,8 @@ const GITHUB_REPO = process.env.GITHUB_REPO || BLOG_FILE.repo || '';
 const GITHUB_POSTS_PATH = process.env.GITHUB_POSTS_PATH || BLOG_FILE.postsPath || 'src/posts';
 const GITHUB_BRANCH = process.env.GITHUB_BRANCH || BLOG_FILE.branch || 'main';
 const GITHUB_EN_POSTS_PATH = process.env.GITHUB_EN_POSTS_PATH || BLOG_FILE.enPostsPath || 'src/en/posts';
+// Adresse des Blogs (z.B. https://example.com), fuer den Link nach dem Veroeffentlichen.
+const BLOG_SITE_URL = (process.env.BLOG_SITE_URL || BLOG_FILE.siteUrl || '').replace(/\/+$/, '');
 const BLOG_ENABLED = Boolean(process.env.ANTHROPIC_API_KEY && process.env.GITHUB_TOKEN && GITHUB_REPO);
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -304,6 +306,13 @@ if (!tripColumns.includes('status')) db.exec("ALTER TABLE trips ADD COLUMN statu
 if (!tripColumns.includes('buchungsfenster_datum')) db.exec('ALTER TABLE trips ADD COLUMN buchungsfenster_datum TEXT');
 const wishlistColumns = db.prepare("PRAGMA table_info(wishlist_campsites)").all().map(c => c.name);
 if (!wishlistColumns.includes('min_naechte')) db.exec('ALTER TABLE wishlist_campsites ADD COLUMN min_naechte INTEGER');
+// Reihenfolge in Packliste, Einkauf und To-dos (seit v4.16). Bestehende Punkte behalten ihre
+// bisherige Reihenfolge (nach id).
+const tripItemColumns = db.prepare("PRAGMA table_info(trip_items)").all().map(c => c.name);
+if (!tripItemColumns.includes('position')) {
+  db.exec('ALTER TABLE trip_items ADD COLUMN position INTEGER');
+  db.exec('UPDATE trip_items SET position = id WHERE position IS NULL');
+}
 
 const TRIP_STATUSES = ['idee', 'angefragt', 'bestaetigt'];
 function validTripStatus(v, fallback) {
@@ -847,6 +856,22 @@ ${fakten}`;
       (entry.kosten_aktivitaeten || 0)
     ) * 100) / 100;
 
+    // Land als Code (CH, DE, IT ...) fuer die Uebersicht "Besuchte Campingplaetze" im Blog.
+    let land = null;
+    if (entry.ort) {
+      try {
+        const cached = db.prepare('SELECT country_code FROM ort_country_cache WHERE ort = ?').get(entry.ort);
+        if (cached) land = cached.country_code;
+        else {
+          const dest = await geocodeHomeCountryFirst(entry.ort);
+          land = (dest && !dest.error && dest.countryCode) || null;
+          db.prepare('INSERT OR REPLACE INTO ort_country_cache (ort, country_code) VALUES (?, ?)').run(entry.ort, land);
+        }
+      } catch (e) {
+        console.error('Land fuer Blogbeitrag nicht ermittelbar:', e.message);
+      }
+    }
+
     // Deterministische Felder aus den Berichtsdaten, nicht von Claude erfunden.
     const post = {
       title: parsed.title,
@@ -856,6 +881,11 @@ ${fakten}`;
       datum_sort: entry.datum_von || '',
       naechte,
       kosten_gesamt: kostenGesamt > 0 ? kostenGesamt : null,
+      // Steckbrief im Blog (seit v4.16)
+      land: land ? String(land).toUpperCase() : null,
+      preis_nacht: entry.kosten_pro_nacht != null && entry.kosten_pro_nacht > 0 ? entry.kosten_pro_nacht : null,
+      bewertung: entry.bewertung >= 1 && entry.bewertung <= 5 ? entry.bewertung : null,
+      stellplatz: STELLPLATZ_BLOG[entry.stellplatzgroesse] || null,
       excerpt: parsed.excerpt || '',
       hero_bild: '',
       fotos: [],
@@ -869,6 +899,9 @@ ${fakten}`;
     res.status(500).json({ error: 'Blogbeitrag konnte nicht erstellt werden. Server nicht erreichbar?' });
   }
 });
+
+// Stellplatzgroesse der App -> Wert im Blog-Steckbrief (klein, mittel, gross)
+const STELLPLATZ_BLOG = { 'zu klein': 'klein', 'akzeptabel': 'mittel', 'geräumig': 'gross', 'sehr viel Platz': 'gross' };
 
 // Slug aus dem Titel fuer den Dateinamen (nur a-z, 0-9, Bindestriche).
 function slugify(text) {
@@ -906,6 +939,11 @@ function buildMarkdownFile(post) {
   if (post.kosten_gesamt !== null && post.kosten_gesamt !== undefined && post.kosten_gesamt !== '') {
     lines.push(`kosten_gesamt: ${Number(post.kosten_gesamt)}`);
   }
+  const num = (v) => v !== null && v !== undefined && v !== '' && !isNaN(Number(v));
+  if (post.land) lines.push(`land: ${yamlString(String(post.land).toUpperCase())}`);
+  if (num(post.preis_nacht)) lines.push(`preis_nacht: ${Number(post.preis_nacht)}`);
+  if (num(post.bewertung)) lines.push(`bewertung: ${Number(post.bewertung)}`);
+  if (post.stellplatz) lines.push(`stellplatz: ${yamlString(post.stellplatz)}`);
   lines.push(`excerpt: ${yamlString(post.excerpt)}`);
   lines.push(`hero_bild: ${post.hero_bild ? yamlString(post.hero_bild) : ''}`.trimEnd());
   const fotos = Array.isArray(post.fotos) ? post.fotos : [];
@@ -1135,6 +1173,27 @@ app.post('/api/entries/:id/blogpost/publish', async (req, res) => {
   }
   const { heroPhotoId, fotoIds } = req.body || {};
 
+  // Fortschritt (seit v4.16): Fragt der Client mit "Accept: application/x-ndjson", kommt
+  // nach jedem Schritt eine JSON-Zeile ({ step, done, total }) und am Ende { result } oder
+  // { error }. Ohne diesen Header antwortet der Endpunkt wie bisher mit einem JSON-Objekt.
+  const streaming = String(req.headers.accept || '').includes('application/x-ndjson');
+  if (streaming) {
+    res.status(200);
+    res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders();
+  }
+  const progress = (obj) => { if (streaming) res.write(JSON.stringify(obj) + '\n'); };
+  const fail = (status, error) => {
+    if (streaming) { res.write(JSON.stringify({ error }) + '\n'); return res.end(); }
+    return res.status(status).json({ error });
+  };
+  const finish = (result) => {
+    if (streaming) { res.write(JSON.stringify({ result }) + '\n'); return res.end(); }
+    return res.json(result);
+  };
+
   const ghHeaders = {
     'Authorization': `Bearer ${githubToken}`,
     'Accept': 'application/vnd.github+json',
@@ -1146,16 +1205,22 @@ app.post('/api/entries/:id/blogpost/publish', async (req, res) => {
     const entryPhotos = db.prepare('SELECT id, filename FROM photos WHERE entry_id = ?').all(req.params.id);
     const photoById = new Map(entryPhotos.map(p => [p.id, p.filename]));
 
-    if (heroPhotoId && photoById.has(Number(heroPhotoId))) {
-      post.hero_bild = await uploadImageToGithub(photoById.get(Number(heroPhotoId)), ghHeaders);
+    const heroFile = heroPhotoId && photoById.has(Number(heroPhotoId)) ? photoById.get(Number(heroPhotoId)) : null;
+    const stripFiles = (Array.isArray(fotoIds) ? fotoIds : []).map(id => photoById.get(Number(id))).filter(Boolean);
+    const totalPhotos = (heroFile ? 1 : 0) + stripFiles.length;
+    let donePhotos = 0;
+    progress({ step: 'photos', done: 0, total: totalPhotos });
+
+    if (heroFile) {
+      post.hero_bild = await uploadImageToGithub(heroFile, ghHeaders);
+      progress({ step: 'photos', done: ++donePhotos, total: totalPhotos });
     }
     if (Array.isArray(fotoIds) && fotoIds.length > 0) {
       const fotos = [];
-      for (const id of fotoIds) {
-        const filename = photoById.get(Number(id));
-        if (!filename) continue;
+      for (const filename of stripFiles) {
         const repoPath = await uploadImageToGithub(filename, ghHeaders);
         fotos.push({ foto: repoPath });
+        progress({ step: 'photos', done: ++donePhotos, total: totalPhotos });
       }
       post.fotos = fotos;
     }
@@ -1179,6 +1244,7 @@ app.post('/api/entries/:id/blogpost/publish', async (req, res) => {
     // des Blogs (die auf deutsche Commits reagiert) schon eine aktuelle Uebersetzung vor
     // und uebersetzt nicht doppelt. Fehler hier brechen den Publish nicht ab; die Action
     // liefert die Uebersetzung dann nach.
+    progress({ step: 'english' });
     let english;
     try {
       english = await publishEnglishVersion(post, filename, ghHeaders);
@@ -1187,6 +1253,7 @@ app.post('/api/entries/:id/blogpost/publish', async (req, res) => {
       english = { status: 'error' };
     }
 
+    progress({ step: 'commit' });
     const markdown = buildMarkdownFile(post);
     const contentBase64 = Buffer.from(markdown, 'utf-8').toString('base64');
     const putRes = await fetch(apiUrl, {
@@ -1203,14 +1270,15 @@ app.post('/api/entries/:id/blogpost/publish', async (req, res) => {
     if (!putRes.ok) {
       const errBody = await putRes.text().catch(() => '');
       console.error('GitHub Upload Fehler:', putRes.status, errBody);
-      return res.status(502).json({ error: 'Upload zu GitHub fehlgeschlagen (Antwort war nicht ok).' });
+      return fail(502, 'Upload zu GitHub fehlgeschlagen (Antwort war nicht ok).');
     }
 
     const putData = await putRes.json();
-    res.json({ path: filePath, url: (putData.content && putData.content.html_url) || null, english });
+    const postUrl = BLOG_SITE_URL ? `${BLOG_SITE_URL}/posts/${filename.replace(/\.md$/, '')}/` : null;
+    finish({ path: filePath, url: (putData.content && putData.content.html_url) || null, postUrl, english });
   } catch (e) {
     console.error('GitHub Publish fehlgeschlagen:', e.message);
-    res.status(500).json({ error: 'Upload zu GitHub fehlgeschlagen. Server nicht erreichbar?' });
+    fail(500, 'Upload zu GitHub fehlgeschlagen. Server nicht erreichbar?');
   }
 });
 
@@ -1277,7 +1345,7 @@ app.delete('/api/lessons/:id', (req, res) => {
 // --- Trip-Planung ---
 
 function attachTripDetails(trip) {
-  const items = db.prepare('SELECT * FROM trip_items WHERE trip_id = ? ORDER BY id').all(trip.id)
+  const items = db.prepare('SELECT * FROM trip_items WHERE trip_id = ? ORDER BY COALESCE(position, id), id').all(trip.id)
     .map(i => ({ ...i, checked: !!i.checked }));
   const meals = db.prepare('SELECT * FROM trip_meals WHERE trip_id = ? ORDER BY datum IS NULL, datum, id').all(trip.id);
   return { ...trip, items, meals };
@@ -1511,7 +1579,7 @@ app.post('/api/trips', (req, res) => {
 
   const packingTemplates = db.prepare("SELECT text FROM templates WHERE category = 'packliste' ORDER BY id").all();
   const todoTemplates = db.prepare("SELECT text FROM templates WHERE category = 'trip_todo' ORDER BY id").all();
-  const insertItem = db.prepare('INSERT INTO trip_items (trip_id, type, text) VALUES (?, ?, ?)');
+  const insertItem = db.prepare('INSERT INTO trip_items (trip_id, type, text, position) VALUES (?, ?, ?, (SELECT COALESCE(MAX(position), 0) + 1 FROM trip_items))');
   for (const t of packingTemplates) insertItem.run(tripId, 'packliste', t.text);
   for (const t of todoTemplates) insertItem.run(tripId, 'todo', t.text);
 
@@ -1604,7 +1672,7 @@ app.post('/api/trips/:id/items', (req, res) => {
   if (!trip) return res.status(404).json({ error: 'Trip nicht gefunden.' });
   const { type, text } = req.body || {};
   if (!type || !text || !text.trim()) return res.status(400).json({ error: 'Typ und Text sind Pflichtfelder.' });
-  const info = db.prepare('INSERT INTO trip_items (trip_id, type, text) VALUES (?, ?, ?)')
+  const info = db.prepare('INSERT INTO trip_items (trip_id, type, text, position) VALUES (?, ?, ?, (SELECT COALESCE(MAX(position), 0) + 1 FROM trip_items))')
     .run(req.params.id, type, text.trim());
   const row = db.prepare('SELECT * FROM trip_items WHERE id = ?').get(info.lastInsertRowid);
   res.status(201).json({ ...row, checked: !!row.checked });
@@ -1621,6 +1689,21 @@ app.put('/api/trip-items/:id', (req, res) => {
   });
   const row = db.prepare('SELECT * FROM trip_items WHERE id = ?').get(req.params.id);
   res.json({ ...row, checked: !!row.checked });
+});
+
+// Neue Reihenfolge einer Liste speichern: ids in der gewuenschten Reihenfolge (seit v4.16).
+app.put('/api/trips/:id/items/order', (req, res) => {
+  const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(Number).filter(Number.isInteger) : null;
+  if (!ids || ids.length === 0) return res.status(400).json({ error: 'ids fehlen.' });
+  const own = new Set(db.prepare('SELECT id FROM trip_items WHERE trip_id = ?').all(req.params.id).map(r => r.id));
+  if (!ids.every(id => own.has(id))) return res.status(400).json({ error: 'Unbekannte Punkte in der Liste.' });
+  // Bestehende Positionen der betroffenen Punkte wiederverwenden, nur neu verteilen. So
+  // bleiben Punkte anderer Listen und erledigte Punkte an ihrem Platz.
+  const positions = db.prepare(`SELECT COALESCE(position, id) AS pos FROM trip_items WHERE id IN (${ids.map(() => '?').join(',')}) ORDER BY pos`)
+    .all(...ids).map(r => r.pos);
+  const update = db.prepare('UPDATE trip_items SET position = ? WHERE id = ?');
+  db.transaction(() => ids.forEach((id, i) => update.run(positions[i], id)))();
+  res.json({ ok: true });
 });
 
 app.delete('/api/trip-items/:id', (req, res) => {
@@ -2159,16 +2242,68 @@ app.get('/api/kpis', (req, res) => {
     SELECT trip_items.id, trip_items.text, trips.id AS trip_id, trips.titel AS trip_titel
     FROM trip_items JOIN trips ON trips.id = trip_items.trip_id
     WHERE trip_items.type = 'einkauf' AND trip_items.checked = 0
-    ORDER BY trips.datum_von ASC, trip_items.id ASC
+    ORDER BY trips.datum_von ASC, COALESCE(trip_items.position, trip_items.id) ASC
   `).all();
   const todoOffen = db.prepare(`
     SELECT trip_items.id, trip_items.text, trips.id AS trip_id, trips.titel AS trip_titel
     FROM trip_items JOIN trips ON trips.id = trip_items.trip_id
     WHERE trip_items.type = 'todo' AND trip_items.checked = 0
-    ORDER BY trips.datum_von ASC, trip_items.id ASC
+    ORDER BY trips.datum_von ASC, COALESCE(trip_items.position, trip_items.id) ASC
   `).all();
 
+  // Verlauf der letzten 12 Monate fuer die kleinen Linien in den Kennzahlen (seit v4.16).
+  const monthKeys = [];
+  const nowD = new Date();
+  for (let i = 11; i >= 0; i--) {
+    const d = new Date(nowD.getFullYear(), nowD.getMonth() - i, 1);
+    monthKeys.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
+  }
+  const emptySeries = () => Object.fromEntries(monthKeys.map(k => [k, 0]));
+  const nightsM = emptySeries();
+  const lodgingM = emptySeries();
+  for (const e of entries) {
+    if (!e.datum_von || !e.datum_bis) continue;
+    const key = e.datum_von.slice(0, 7);
+    if (!(key in nightsM)) continue;
+    const n = Math.max(0, Math.round((new Date(e.datum_bis + 'T00:00:00') - new Date(e.datum_von + 'T00:00:00')) / 86400000));
+    nightsM[key] += n;
+    if (e.kosten_pro_nacht) lodgingM[key] += e.kosten_pro_nacht * n;
+  }
+  // Gefahrene km pro Monat: letzter Stand im Monat minus letzter Stand davor
+  const kmM = {};
+  let prevKm = null;
+  const firstKey = monthKeys[0];
+  for (const r of readings) {
+    if (r.datum && r.datum.slice(0, 7) < firstKey) prevKm = r.km;
+  }
+  for (const key of monthKeys) {
+    const inMonth = readings.filter(r => r.datum && r.datum.slice(0, 7) === key);
+    if (inMonth.length > 0) {
+      const last = inMonth[inMonth.length - 1].km;
+      kmM[key] = prevKm != null ? Math.max(0, last - prevKm) : null;
+      prevKm = last;
+    } else {
+      kmM[key] = prevKm != null ? 0 : null;
+    }
+  }
+  const fuelM = emptySeries();
+  for (const ev of db.prepare("SELECT datum, kosten FROM vehicle_events WHERE typ IN ('tanken', 'laden') AND kosten IS NOT NULL").all()) {
+    const key = (ev.datum || '').slice(0, 7);
+    if (key in fuelM) fuelM[key] += ev.kosten;
+  }
+  const round2 = (v) => Math.round(v * 100) / 100;
+  const verlauf = {
+    monate: monthKeys,
+    naechte: monthKeys.map(k => nightsM[k]),
+    kostenProNacht: monthKeys.map(k => nightsM[k] > 0 ? round2(lodgingM[k] / nightsM[k]) : null),
+    km: monthKeys.map(k => kmM[k]),
+    treibstoffProKm: monthKeys.map(k => kmM[k] > 0 && fuelM[k] > 0 ? round2(fuelM[k] / kmM[k]) : null)
+  };
+
   res.json({
+    verlauf,
+    kmSollHeute: period.expectedByNow,
+    kmOnTrack: period.onTrack,
     stopps: entries.length,
     naechte: totalNights,
     ausgabenTotal: Math.round(totalCost * 100) / 100,
@@ -2196,7 +2331,7 @@ app.get('/api/trip-items/:type', (req, res) => {
            trips.id AS trip_id, trips.titel AS trip_titel
     FROM trip_items JOIN trips ON trips.id = trip_items.trip_id
     WHERE trip_items.type = ?
-    ORDER BY trips.datum_von ASC, trip_items.checked ASC, trip_items.id ASC
+    ORDER BY trips.datum_von ASC, trip_items.checked ASC, COALESCE(trip_items.position, trip_items.id) ASC
   `).all(req.params.type);
   res.json(rows.map(r => ({ ...r, checked: !!r.checked })));
 });
