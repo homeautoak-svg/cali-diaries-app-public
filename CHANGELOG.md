@@ -1,5 +1,33 @@
 # Changelog
 
+## 1.4.0 (24.10.2026)
+
+Subtle motion where the app waits, saves or shows numbers. Every animation is short and is
+switched off when the system setting "Reduce motion" is on.
+- Photo upload: each photo shows its own progress (waiting, percent, done) with the total in
+  MB below. Afterwards a bar without percentage shows that the server is still converting the
+  photos. No further autosave starts during an upload, so photos are never sent twice.
+- Blog publishing: instead of a spinner, the steps generate text, upload photos (with a
+  counter), English version and publish to GitHub are shown. The server reports every step
+  (NDJSON). A failed step is marked red and can be retried. At the end a check mark is drawn,
+  with a link to the post.
+- Blog posts now include country, price per night, rating and pitch size. The link after
+  publishing uses "siteUrl" in data/blog.json or BLOG_SITE_URL; without it, the app links to
+  GitHub.
+- Toasts with an icon and a thin line for the remaining time. Errors offer a "Retry" action
+  (saving a report, checking off items, publishing).
+- An empty required field (campsite) shakes briefly and shows the reason right below.
+- Loading: placeholders with a calm shimmer instead of pulsing, also in wishlist, lessons,
+  odometer and shopping/to-dos instead of a spinner. Lists fade in with a slight stagger.
+- Packing list, shopping and to-dos: checking an item pops the check mark, strikes the item
+  through and moves it to the done items after a short pause. Open items can be reordered with
+  the handle on the left (finger, mouse or arrow keys); the order is saved (new column
+  position, new endpoint PUT /api/trips/:id/items/order).
+- Statistics: small 12-month trend lines for nights, km, cost per night and fuel per km. The
+  km budget shows a marker for today's target.
+- Phone: pulling down at the top of a list reloads everything at once. Newly arrived trips and
+  reports are briefly highlighted, with the time of the update above.
+
 ## 1.3.0 (11.10.2026)
 
 - Laptop layout from a window width of 1000 px; phones are unchanged. Navigation moves to a
