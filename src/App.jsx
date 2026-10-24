@@ -7,7 +7,7 @@ import {
   ChevronRight, ChevronLeft, Compass, BarChart3, ShoppingCart, Backpack,
   ListTodo, UtensilsCrossed, Settings, Settings2, Ruler, ClipboardList, Sparkles, Gauge, TrendingUp,
   Wrench, Tag, Star, Download, AlertTriangle, Droplet, Eye, Check, Zap, Sun,
-  House, CalendarDays, ChevronDown, RefreshCw, TriangleAlert, ExternalLink, SlidersHorizontal
+  House, CalendarDays, ChevronDown, RefreshCw, TriangleAlert, ExternalLink, SlidersHorizontal, GripVertical, AlertCircle
 } from 'lucide-react';
 
 const PRESET_TAGS = [
@@ -504,9 +504,12 @@ function publicHolidaySummary(info) {
 // --- Eigene Toast- und Bestaetigungs-Dialoge statt Browser-alert()/confirm() ---
 
 let toastListeners = [];
-function showToast(message, type = 'info') {
+// action (optional): { label, onClick } fuer eine Schaltflaeche im Toast, z.B. "Erneut".
+// Toasts mit Aktion bleiben etwas laenger stehen, damit man sie erreicht.
+function showToast(message, type = 'info', action = null) {
   const id = Date.now() + Math.random();
-  toastListeners.forEach(fn => fn({ id, message, type }));
+  const duration = action ? 5000 : 2800;
+  toastListeners.forEach(fn => fn({ id, message, type, action, duration }));
 }
 
 // Damit Aenderungen mehrerer Personen gegenseitig sichtbar werden, ohne eine komplett neue
@@ -519,12 +522,15 @@ function useAutoRefresh(loadFn, intervalMs = 20000) {
     function onVisible() {
       if (document.visibilityState === 'visible') loadFn(true);
     }
+    function onManual() { loadFn(true); }
     document.addEventListener('visibilitychange', onVisible);
     window.addEventListener('focus', onVisible);
+    window.addEventListener('cd-refresh', onManual); // Ziehen zum Aktualisieren (seit v4.16)
     return () => {
       clearInterval(interval);
       document.removeEventListener('visibilitychange', onVisible);
       window.removeEventListener('focus', onVisible);
+      window.removeEventListener('cd-refresh', onManual);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loadFn]);
@@ -585,7 +591,7 @@ function ToastHost() {
   useEffect(() => {
     const listener = (toast) => {
       setToasts(prev => [...prev, toast]);
-      setTimeout(() => setToasts(prev => prev.filter(t => t.id !== toast.id)), 2800);
+      setTimeout(() => setToasts(prev => prev.filter(t => t.id !== toast.id)), toast.duration);
     };
     toastListeners.push(listener);
     return () => { toastListeners = toastListeners.filter(l => l !== listener); };
@@ -598,12 +604,27 @@ function ToastHost() {
       alignItems: 'center', gap: 8, zIndex: 300, pointerEvents: 'none', padding: '0 18px'
     }}>
       {toasts.map(t => (
-        <div key={t.id} style={{
+        <div key={t.id} role={t.type === 'error' ? 'alert' : 'status'} style={{
+          position: 'relative', overflow: 'hidden', display: 'flex', alignItems: 'center', gap: 10,
           background: t.type === 'error' ? '#B3402A' : 'var(--forest)', color: '#FFFFFF',
-          padding: '11px 18px', borderRadius: 10, fontSize: 14, boxShadow: '0 8px 20px rgba(0,0,0,0.25)',
-          maxWidth: 360, textAlign: 'center', animation: 'toastIn 0.25s ease-out'
+          padding: '11px 14px', borderRadius: 12, fontSize: 14, boxShadow: '0 8px 20px rgba(0,0,0,0.25)',
+          maxWidth: 360, width: 'max-content', textAlign: 'left', animation: 'toastIn 0.25s ease-out',
+          pointerEvents: t.action ? 'auto' : 'none'
         }}>
-          {t.message}
+          <span style={{
+            width: 22, height: 22, borderRadius: '50%', background: 'rgba(255,255,255,0.18)', flexShrink: 0,
+            display: 'flex', alignItems: 'center', justifyContent: 'center'
+          }}>
+            {t.type === 'error' ? <AlertCircle size={14} /> : <Check size={14} />}
+          </span>
+          <span style={{ flex: 1, lineHeight: 1.35 }}>{t.message}</span>
+          {t.action && (
+            <button onClick={() => { setToasts(prev => prev.filter(x => x.id !== t.id)); t.action.onClick(); }} style={{
+              background: 'none', border: 'none', color: '#FFFFFF', fontWeight: 600, fontSize: 13, cursor: 'pointer',
+              textDecoration: 'underline', textUnderlineOffset: 3, padding: '4px 0 4px 6px', fontFamily: 'var(--font-body)', flexShrink: 0
+            }}>{t.action.label}</button>
+          )}
+          <span aria-hidden="true" className="toast-life" style={{ animationDuration: `${t.duration}ms` }} />
         </div>
       ))}
     </div>
@@ -1008,17 +1029,26 @@ const sectionLabelStyle = {
   fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.8, color: 'var(--forest)', marginBottom: 8, fontWeight: 700
 };
 
-function Field({ label, icon: Icon, children }) {
+// error: Hinweis unter dem Feld; errorKey wechselt bei jedem erneuten Fehlversuch, damit das
+// Feld auch beim zweiten Mal kurz wackelt (seit v4.16).
+function Field({ label, icon: Icon, children, error, errorKey }) {
   return (
     <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
       <span style={{
-        fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.8, color: 'var(--muted)',
+        fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.8, color: error ? '#93341C' : 'var(--muted)',
         display: 'flex', alignItems: 'center', gap: 6
       }}>
         {Icon && <Icon size={13} />}
         {label}
       </span>
-      {children}
+      {error ? (
+        <div key={errorKey} className="shake field-error" style={{ display: 'flex', flexDirection: 'column' }}>{children}</div>
+      ) : children}
+      {error && (
+        <span role="alert" style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#93341C' }}>
+          <AlertCircle size={13} />{error}
+        </span>
+      )}
     </label>
   );
 }
@@ -1377,6 +1407,23 @@ function QuickExpenseModal({ onClose, onSaved }) {
 // Pulsierender Platzhalter fuer den Ladezustand (Skeleton statt Spinner).
 function SkeletonBlock({ w = '100%', h = 12, r = 6, bg = '#E8EEE5', style }) {
   return <div className="skeleton" style={{ width: w, height: h, borderRadius: r, background: bg, ...style }} />;
+}
+
+// Platzhalter fuer Listen waehrend des ersten Ladens (statt Spinner, seit v4.16).
+function SkeletonRows({ count = 4 }) {
+  return (
+    <div aria-busy="true" style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: '4px 0' }}>
+      {Array.from({ length: count }, (_, i) => (
+        <div key={i} style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+          <SkeletonBlock w="48px" h={48} r={12} style={{ flexShrink: 0 }} />
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <SkeletonBlock w={`${70 - (i % 3) * 12}%`} h={13} />
+            <SkeletonBlock w={`${45 + (i % 2) * 10}%`} h={10} />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
 }
 
 // Erscheint, wenn der Server nach einigen Sekunden noch nicht geantwortet hat.
@@ -1921,6 +1968,83 @@ function FlameRating({ value, onChange, size = 28, readOnly = false }) {
   );
 }
 
+// Sendet ein FormData mit Upload-Fortschritt (fetch kann das nicht). onProgress bekommt die
+// bisher uebertragenen und die gesamten Bytes; ist alles uebertragen, verarbeitet der Server
+// die Fotos noch (HEIC umwandeln, verkleinern), bevor die Antwort kommt.
+function sendFormWithProgress(url, method, form, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open(method, url);
+    xhr.upload.onprogress = (e) => { if (e.lengthComputable) onProgress(e.loaded, e.total); };
+    xhr.onload = () => {
+      let data = {};
+      try { data = JSON.parse(xhr.responseText || '{}'); } catch { data = {}; }
+      if (xhr.status >= 200 && xhr.status < 300) resolve(data);
+      else reject(new Error(data.error || tr('Speichern fehlgeschlagen.')));
+    };
+    xhr.onerror = () => reject(new Error('Failed to fetch'));
+    xhr.send(form);
+  });
+}
+
+// Fortschritt pro Foto (seit v4.16). Die Fotos gehen in einer Anfrage nacheinander an den
+// Server; aus den uebertragenen Bytes ergibt sich, welches Foto gerade laeuft. Danach zeigt
+// ein Balken ohne Prozentwert, dass der Server die Fotos noch verarbeitet.
+function UploadProgress({ upload }) {
+  const { files, loaded, total, phase } = upload;
+  const fileBytes = files.reduce((sum, f) => sum + f.size, 0);
+  const overhead = Math.max(0, total - fileBytes);
+  let offset = overhead / 2;
+  const states = files.map(f => {
+    const start = offset;
+    offset += f.size;
+    const pct = f.size > 0 ? Math.max(0, Math.min(1, (loaded - start) / f.size)) : 1;
+    if (phase === 'process') return { f, pct: 1, label: tr('Verarbeitung'), processing: true };
+    if (pct >= 1) return { f, pct: 1, label: tr('Fertig'), done: true };
+    if (pct > 0) return { f, pct, label: `${Math.round(pct * 100)} %` };
+    return { f, pct: 0, label: tr('Wartet') };
+  });
+  const doneCount = states.filter(x => x.done || x.processing).length;
+  const mb = (b) => (b / 1048576).toLocaleString(numLocale(), { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+  return (
+    <div role="status" aria-live="polite" style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 4 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(96px, 1fr))', gap: 8 }}>
+        {states.map(({ f, pct, label, done, processing }) => (
+          <div key={f.name + f.size} style={{ border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden', background: '#fff' }}>
+            <div style={{ position: 'relative', height: 64, background: 'var(--card-alt)' }}>
+              {f.preview && <img src={f.preview} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: pct > 0 || processing ? 1 : 0.5 }} />}
+              {done && (
+                <span className="check-pop" style={{
+                  position: 'absolute', top: 5, right: 5, width: 20, height: 20, borderRadius: '50%', background: 'var(--forest)',
+                  color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center'
+                }}><Check size={12} /></span>
+              )}
+            </div>
+            <div style={{ height: 3, background: '#E6EDE2', overflow: 'hidden', margin: '0 7px' }}>
+              {processing
+                ? <div className="bar-indet" style={{ width: '35%', height: '100%', background: 'var(--forest)' }} />
+                : <div style={{ width: `${pct * 100}%`, height: '100%', background: 'var(--forest)', transition: 'width 0.2s linear' }} />}
+            </div>
+            <div style={{ padding: '5px 7px 6px', fontSize: 11, color: 'var(--muted)', display: 'flex', justifyContent: 'space-between', gap: 4 }}>
+              <b style={{ color: 'var(--text)', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</b>
+              <span style={{ whiteSpace: 'nowrap' }}>{mb(f.size)} MB</span>
+            </div>
+          </div>
+        ))}
+      </div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: 'var(--muted)' }}>
+        <span>{phase === 'process' ? tr('Server verarbeitet die Fotos') : tr('{done} von {total} Fotos', { done: doneCount, total: files.length })}</span>
+        <span style={{ fontVariantNumeric: 'tabular-nums' }}>{mb(Math.min(loaded, total))} / {mb(total)} MB</span>
+      </div>
+      <div style={{ height: 6, borderRadius: 3, background: '#E6EDE2', overflow: 'hidden' }}>
+        {phase === 'process'
+          ? <div className="bar-indet" style={{ width: '35%', height: '100%', background: 'var(--forest)' }} />
+          : <div style={{ width: `${total ? (loaded / total) * 100 : 0}%`, height: '100%', background: 'var(--forest)', transition: 'width 0.2s linear' }} />}
+      </div>
+    </div>
+  );
+}
+
 function EntryForm({ existing, prefill, onSaved, onCancel, onEntryUpdated, readOnly = false }) {
   const base = existing || prefill || {};
   const [campingplatz, setCampingplatz] = useState(base.campingplatz || '');
@@ -1943,6 +2067,11 @@ function EntryForm({ existing, prefill, onSaved, onCancel, onEntryUpdated, readO
   const [notizen, setNotizen] = useState(existing?.notizen || '');
   const [files, setFiles] = useState([]);
   const [existingPhotos, setExistingPhotos] = useState(existing?.photos || []);
+  const [fieldError, setFieldError] = useState(null);
+  const [upload, setUpload] = useState(null); // { files, loaded, total, phase: 'upload' | 'process' }
+  // Waehrend eines Uploads keinen weiteren Autosave starten, sonst gingen dieselben Fotos doppelt
+  // an den Server. Nach dem Upload wird files geleert, das loest den naechsten Autosave aus.
+  const uploadingRef = useRef(false);
   const [deletingPhotoId, setDeletingPhotoId] = useState(null);
   const [weatherLoading, setWeatherLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -2028,7 +2157,11 @@ function EntryForm({ existing, prefill, onSaved, onCancel, onEntryUpdated, readO
   }
 
   async function doSave() {
-    if (!campingplatz.trim()) { setError(tr('Campingplatz ist ein Pflichtfeld.')); return null; }
+    if (!campingplatz.trim()) {
+      setFieldError({ campingplatz: tr('Bitte einen Campingplatz angeben'), n: Date.now() });
+      return null;
+    }
+    setFieldError(null);
     setError('');
     const form = new FormData();
     form.append('campingplatz', campingplatz);
@@ -2046,7 +2179,9 @@ function EntryForm({ existing, prefill, onSaved, onCancel, onEntryUpdated, readO
     form.append('tags', JSON.stringify(tags));
     const tripId = existing?.trip_id ?? prefill?.trip_id;
     if (tripId) form.append('trip_id', String(tripId));
-    files.forEach(f => form.append('photos', f));
+    // Laeuft schon ein Upload (z.B. Zurueck waehrend des Hochladens), die Fotos nicht noch einmal mitschicken.
+    const sendFiles = uploadingRef.current ? [] : files;
+    sendFiles.forEach(f => form.append('photos', f));
 
     const cleanNewLessons = newLessons.map(l => l.trim()).filter(Boolean);
     const cleanNewTodos = newTodos.map(t => t.trim()).filter(Boolean);
@@ -2064,6 +2199,21 @@ function EntryForm({ existing, prefill, onSaved, onCancel, onEntryUpdated, readO
       form.append('todos', JSON.stringify(cleanNewTodos));
     }
 
+    // Mit Fotos: Fortschritt anzeigen. Ohne Fotos wie bisher per fetch.
+    if (sendFiles.length > 0) {
+      const list = sendFiles.map(f => ({ name: f.name, size: f.size, preview: URL.createObjectURL(f) }));
+      setUpload({ files: list, loaded: 0, total: 1, phase: 'upload' });
+      uploadingRef.current = true;
+      try {
+        return await sendFormWithProgress(url, method, form, (loaded, total) => {
+          setUpload(u => u && { ...u, loaded, total, phase: loaded >= total ? 'process' : 'upload' });
+        });
+      } finally {
+        list.forEach(f => URL.revokeObjectURL(f.preview));
+        uploadingRef.current = false;
+        setUpload(null);
+      }
+    }
     const res = await fetch(url, { method, body: form });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
@@ -2073,13 +2223,15 @@ function EntryForm({ existing, prefill, onSaved, onCancel, onEntryUpdated, readO
   }
 
   async function submit(e) {
-    e.preventDefault();
+    if (e) e.preventDefault();
     setSaving(true);
     try {
       const saved = await doSave();
       if (saved) onSaved(saved);
     } catch (err) {
-      setError(err.message === 'Failed to fetch' ? tr('Server nicht erreichbar.') : err.message);
+      const msg = err.message === 'Failed to fetch' ? tr('Server nicht erreichbar.') : err.message;
+      setError(msg);
+      showToast(tr('Nicht gespeichert'), 'error', { label: tr('Erneut'), onClick: () => submit() });
     } finally {
       setSaving(false);
     }
@@ -2095,6 +2247,7 @@ function EntryForm({ existing, prefill, onSaved, onCancel, onEntryUpdated, readO
     if (!existing || readOnly) return;
     if (!autosaveMounted.current) { autosaveMounted.current = true; return; }
     const timer = setTimeout(async () => {
+      if (uploadingRef.current) return;
       try {
         const cleanLessons = newLessons.map(l => l.trim()).filter(Boolean);
         const cleanTodos = newTodos.map(t => t.trim()).filter(Boolean);
@@ -2161,13 +2314,15 @@ function EntryForm({ existing, prefill, onSaved, onCancel, onEntryUpdated, readO
         </div>
       )}
 
-      <form onSubmit={submit}
+      <form onSubmit={submit} noValidate
         style={{
           padding: '18px 18px 0', display: 'flex', flexDirection: 'column', gap: 18,
           ...(readOnly ? { pointerEvents: 'none' } : {})
         }}>
-        <Field label={tr('Campingplatz *')} icon={Tent}>
-          <input value={campingplatz} onChange={e => setCampingplatz(e.target.value)} style={inputStyle} required />
+        <Field label={tr('Campingplatz *')} icon={Tent} error={fieldError?.campingplatz} errorKey={fieldError?.n}>
+          <input value={campingplatz} onChange={e => { setCampingplatz(e.target.value); if (e.target.value.trim()) setFieldError(null); }}
+            style={fieldError?.campingplatz ? { ...inputStyle, borderColor: '#B3402A', background: '#FFF8F6' } : inputStyle}
+            aria-invalid={Boolean(fieldError?.campingplatz)} />
         </Field>
         <Field label={tr('Ort')} icon={MapPin}>
           <input value={ort} onChange={e => setOrt(e.target.value)} style={inputStyle} placeholder={tr('z.B. Sempach, LU')} />
@@ -2266,6 +2421,7 @@ function EntryForm({ existing, prefill, onSaved, onCancel, onEntryUpdated, readO
               ))}
             </div>
           )}
+          {upload ? <UploadProgress upload={upload} /> : (
           <label style={{
             ...inputStyle, display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', color: 'var(--muted)'
           }}>
@@ -2274,6 +2430,7 @@ function EntryForm({ existing, prefill, onSaved, onCancel, onEntryUpdated, readO
             <input type="file" accept="image/*" multiple
               onChange={e => setFiles(Array.from(e.target.files || []))} style={{ display: 'none' }} />
           </label>
+          )}
         </Field>
 
         <Field label={tr('Lessons Learnt')} icon={Lightbulb}>
@@ -2461,6 +2618,103 @@ function EntryTodosSection({ entry, onRefresh }) {
   );
 }
 
+// Veroeffentlichen in Schritten (seit v4.16). Der Text ist zu diesem Zeitpunkt schon erzeugt;
+// Fotos, englische Fassung und Commit meldet der Server einzeln zurueck.
+function PublishProgress({ pub, title, photoCount, onRetry, onBack, onDone, busy }) {
+  const order = ['text', 'photos', 'english', 'commit'];
+  const at = pub.step === 'done' ? order.length : order.indexOf(pub.step);
+  const steps = [
+    { key: 'text', label: tr('Text erzeugen'), sub: tr('Titel, Kurztext und Beitrag') },
+    { key: 'photos', label: tr('Fotos übertragen'),
+      sub: photoCount ? tr('{done} von {total} Fotos', { done: pub.step === 'photos' ? (pub.done || 0) : (at > 1 ? photoCount : 0), total: photoCount }) : tr('Keine Fotos ausgewählt') },
+    { key: 'english', label: tr('Englische Fassung'), sub: tr('Übersetzung für /en/') },
+    { key: 'commit', label: tr('Auf GitHub veröffentlichen'), sub: tr('Commit ins Blog-Repo') }
+  ];
+  if (pub.step === 'done') {
+    const en = pub.result?.english?.status;
+    const enText = en === 'published' ? tr('Deutsch und Englisch hochgeladen.')
+      : en === 'unchanged' ? tr('Englische Fassung war schon aktuell.')
+      : en === 'manual' ? tr('Englische Fassung wurde von Hand bearbeitet und nicht überschrieben.')
+      : tr('Englische Fassung folgt automatisch.');
+    const link = pub.result?.postUrl || pub.result?.url;
+    return (
+      <div style={{ textAlign: 'center', padding: '18px 4px 4px' }}>
+        <svg width="80" height="80" viewBox="0 0 88 88" aria-hidden="true">
+          <circle cx="44" cy="44" r="40" fill="none" stroke="var(--forest)" strokeWidth="4" className="draw" style={{ '--len': 252 }} transform="rotate(-90 44 44)" />
+          <path d="M27 45 l11 11 l22 -24" fill="none" stroke="var(--forest)" strokeWidth="5" strokeLinecap="round" strokeLinejoin="round" className="draw" style={{ '--len': 60, animationDelay: '0.45s' }} />
+        </svg>
+        <div className="fade-up" style={{ animationDelay: '0.7s' }}>
+          <div style={{ fontFamily: 'var(--font-display)', fontSize: 20, margin: '14px 0 6px' }}>{tr('Beitrag veröffentlicht')}</div>
+          <div style={{ fontSize: 13, color: 'var(--muted)', lineHeight: 1.5, marginBottom: 18 }}>
+            {enText}<br />{tr('Der Blog baut die Seite neu, online in etwa zwei Minuten.')}
+          </div>
+          {link && (
+            <a href={link} target="_blank" rel="noopener noreferrer" style={{
+              display: 'inline-flex', alignItems: 'center', gap: 6, color: 'var(--forest)', fontWeight: 600, fontSize: 14,
+              textDecoration: 'none', marginBottom: 16
+            }}>
+              <ExternalLink size={15} />{pub.result?.postUrl ? tr('Beitrag ansehen') : tr('Auf GitHub ansehen')}
+            </a>
+          )}
+          <button onClick={onDone} style={{ ...primaryButtonStyle, width: '100%' }}>{tr('Fertig')}</button>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div>
+      {title && (
+        <div style={{ background: 'var(--card-alt)', border: '1px solid var(--border)', borderRadius: 12, padding: '10px 12px', marginBottom: 16 }}>
+          <div style={{ fontSize: 12, color: 'var(--muted)' }}>{tr('Beitrag')}</div>
+          <div style={{ fontFamily: 'var(--font-display)', fontSize: 16 }}>{title}</div>
+        </div>
+      )}
+      <ol style={{ listStyle: 'none', margin: 0, padding: 0 }}>
+        {steps.map((st, i) => {
+          const done = i < at;
+          const active = i === at && !pub.failed;
+          const failed = i === at && pub.failed;
+          const last = i === steps.length - 1;
+          return (
+            <li key={st.key} style={{ display: 'flex', gap: 12, position: 'relative', paddingBottom: last ? 0 : 20 }}>
+              {!last && <span style={{ position: 'absolute', left: 13, top: 30, bottom: 2, width: 2, background: done ? 'var(--forest)' : 'var(--border)' }} />}
+              <span style={{
+                width: 28, height: 28, borderRadius: '50%', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                border: `2px solid ${failed ? '#B3402A' : done || active ? 'var(--forest)' : 'var(--border)'}`,
+                background: done ? 'var(--forest)' : failed ? '#B3402A' : '#fff', color: done || failed ? '#fff' : 'var(--muted)',
+                fontSize: 12, fontWeight: 600, position: 'relative'
+              }}>
+                {done ? <Check size={15} className="check-pop" /> : failed ? <X size={14} /> : active
+                  ? <><span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--forest)' }} />
+                    <span className="spin" style={{ position: 'absolute', inset: -2, borderRadius: '50%', border: '2px solid transparent', borderTopColor: 'var(--forest)' }} /></>
+                  : i + 1}
+              </span>
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <div style={{ fontSize: 15, fontWeight: done || active || failed ? 600 : 500, color: done || active ? 'var(--text)' : failed ? '#93341C' : 'var(--muted)', marginTop: 3 }}>{st.label}</div>
+                <div style={{ fontSize: 12, color: failed ? '#93341C' : 'var(--muted)', marginTop: 2 }}>{failed ? pub.failed : st.sub}</div>
+                {active && st.key === 'photos' && photoCount > 0 && (
+                  <div style={{ height: 4, borderRadius: 2, background: '#E6EDE2', overflow: 'hidden', width: 160, marginTop: 8 }}>
+                    <div style={{ height: '100%', width: `${((pub.done || 0) / photoCount) * 100}%`, background: 'var(--forest)', transition: 'width 0.3s ease-out' }} />
+                  </div>
+                )}
+              </div>
+            </li>
+          );
+        })}
+      </ol>
+      {pub.failed && (
+        <div style={{ display: 'flex', gap: 10, marginTop: 18 }}>
+          <button onClick={onBack} disabled={busy} style={{
+            flex: 1, background: 'var(--input-bg)', border: '1px solid var(--border)', borderRadius: 10, padding: '13px 0',
+            fontSize: 15, fontWeight: 600, cursor: 'pointer', color: 'var(--text)', fontFamily: 'var(--font-body)'
+          }}>{tr('Zurück zum Text')}</button>
+          <button onClick={onRetry} disabled={busy} style={{ ...primaryButtonStyle, flex: 1 }}>{tr('Erneut versuchen')}</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function EntryDetail({ entry, onBack, onEdit, onView, onDeleted, onLessonChanged, onRefreshEntry }) {
   const { desktop, wide } = useLayout();
   const [deleting, setDeleting] = useState(false);
@@ -2468,6 +2722,8 @@ function EntryDetail({ entry, onBack, onEdit, onView, onDeleted, onLessonChanged
   const [blogOpen, setBlogOpen] = useState(false);
   const [blogJsonText, setBlogJsonText] = useState('');
   const [publishing, setPublishing] = useState(false);
+  // Ablauf der Veroeffentlichung (seit v4.16): { step, done, total, failed, result }
+  const [pub, setPub] = useState(null);
   const [heroPhotoId, setHeroPhotoId] = useState(null);
   const [fotoIds, setFotoIds] = useState([]);
   const [lightboxUrl, setLightboxUrl] = useState(null);
@@ -2514,27 +2770,53 @@ function EntryDetail({ entry, onBack, onEdit, onView, onDeleted, onLessonChanged
       showToast(tr('JSON ist ungültig, bitte prüfen.'), 'error');
       return;
     }
+    setBlogOpen(true);
     setPublishing(true);
+    setPub({ step: 'photos', done: 0, total: (heroPhotoId ? 1 : 0) + fotoIds.length });
+    let current = 'photos';
     try {
       const res = await fetch(`/api/entries/${entry.id}/blogpost/publish`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'Accept': 'application/x-ndjson' },
         body: JSON.stringify({ post: parsed, heroPhotoId, fotoIds })
       });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || tr('Upload fehlgeschlagen.'));
-      // Rueckmeldung zur englischen Fassung (seit v4.1)
-      const en = data.english && data.english.status;
-      const enText = en === 'published' ? tr('Deutsch und Englisch in GitHub hochgeladen')
-        : en === 'unchanged' ? tr('In GitHub hochgeladen, englische Fassung war schon aktuell')
-        : en === 'manual' ? tr('In GitHub hochgeladen, englische Fassung von Hand bearbeitet und nicht überschrieben')
-        : tr('In GitHub hochgeladen, englische Fassung folgt automatisch');
-      showToast(enText);
-      setBlogOpen(false);
+      if (!res.ok || !res.body) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || tr('Upload fehlgeschlagen.'));
+      }
+      // Zeilenweise lesen: jede Zeile ist ein Fortschritts-Schritt oder das Ergebnis.
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let result = null;
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let nl;
+        while ((nl = buffer.indexOf('\n')) >= 0) {
+          const line = buffer.slice(0, nl).trim();
+          buffer = buffer.slice(nl + 1);
+          if (!line) continue;
+          const msg = JSON.parse(line);
+          if (msg.error) throw new Error(msg.error);
+          if (msg.result) result = msg.result;
+          else if (msg.step) { current = msg.step; setPub(p => ({ ...p, ...msg })); }
+        }
+      }
+      if (!result) throw new Error(tr('Upload fehlgeschlagen.'));
+      setPub(p => ({ ...p, step: 'done', result }));
     } catch (e) {
-      showToast(e.message === 'Failed to fetch' ? tr('Server nicht erreichbar.') : e.message, 'error');
+      const msg = e.message === 'Failed to fetch' ? tr('Server nicht erreichbar.') : e.message;
+      setPub(p => ({ ...(p || {}), step: current, failed: msg }));
+      showToast(tr('Veröffentlichen fehlgeschlagen'), 'error', { label: tr('Erneut'), onClick: () => publishBlogPost() });
     } finally {
       setPublishing(false);
     }
+  }
+
+  function closeBlog() {
+    setBlogOpen(false);
+    setPub(null);
   }
 
   async function remove() {
@@ -2707,11 +2989,15 @@ function EntryDetail({ entry, onBack, onEdit, onView, onDeleted, onLessonChanged
           }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
               <span style={{ fontFamily: 'var(--font-display)', fontSize: 18, color: 'var(--text)' }}>{tr('Blogbeitrag')}</span>
-              <button onClick={() => setBlogOpen(false)} style={{ ...iconButtonStyle, width: 30, height: 30 }}>
+              <button onClick={closeBlog} disabled={publishing} style={{ ...iconButtonStyle, width: 30, height: 30 }}>
                 <X size={17} />
               </button>
             </div>
-            {blogLoading ? (
+            {pub ? (
+              <PublishProgress pub={pub} title={(() => { try { return JSON.parse(blogJsonText).title; } catch { return ''; } })()}
+                photoCount={(heroPhotoId ? 1 : 0) + fotoIds.length}
+                onRetry={publishBlogPost} onBack={() => setPub(null)} onDone={closeBlog} busy={publishing} />
+            ) : blogLoading ? (
               <div style={{ display: 'flex', justifyContent: 'center', padding: 40, color: 'var(--muted)' }}>
                 <Loader2 size={22} className="spin" />
               </div>
@@ -2857,11 +3143,7 @@ function LessonsView({ lessons, loading, error, onToggle, onDelete, onAddStandal
           </button>
         </form>
 
-        {loading && (
-          <div style={{ display: 'flex', justifyContent: 'center', padding: 40, color: 'var(--muted)' }}>
-            <Loader2 size={22} className="spin" />
-          </div>
-        )}
+        {loading && <SkeletonRows />}
         {error && <div style={{ color: '#B3402A', fontSize: 14 }}>{error}</div>}
 
         {!loading && !error && lessons.length === 0 && (
@@ -3061,11 +3343,7 @@ function WishlistView({ wishlist, loading, error, onBack, onEdit, onAdd, onDelet
       </div>
 
       <div style={{ padding: '14px 18px 90px' }}>
-        {loading && (
-          <div style={{ display: 'flex', justifyContent: 'center', padding: 40, color: 'var(--muted)' }}>
-            <Loader2 size={22} className="spin" />
-          </div>
-        )}
+        {loading && <SkeletonRows />}
         {error && <div style={{ color: '#B3402A', fontSize: 14 }}>{error}</div>}
         {!loading && !error && wishlist.length === 0 && (
           <div style={{ textAlign: 'center', padding: '60px 20px', color: 'var(--muted)' }}>
@@ -3898,7 +4176,7 @@ const tripsH2Style = { margin: 0, fontSize: 13, fontWeight: 600, display: 'flex'
 
 const filterLabelStyle = { fontSize: 12, fontWeight: 600, color: 'var(--muted)' };
 
-function TripsHub({ trips, entries, wishlist, loading, error, navigate, onPlanned, mode: modeProp, onModeChange, selectedTripId, selectedEntryId }) {
+function TripsHub({ trips, entries, wishlist, loading, error, navigate, onPlanned, mode: modeProp, onModeChange, selectedTripId, selectedEntryId, newIds }) {
   // Der Modus (Liste, Kalender, Saison) kann von aussen gefuehrt werden, damit er beim Zurueck
   // aus einem Trip und in der Laptop-Ansicht erhalten bleibt.
   const [modeLocal, setModeLocal] = useState('liste');
@@ -4097,13 +4375,13 @@ function TripsHub({ trips, entries, wishlist, loading, error, navigate, onPlanne
             {unterwegs.length > 0 && (
               <section style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 <h2 style={{ ...tripsH2Style, color: 'var(--forest)' }}><Compass size={15} />{tr('Unterwegs')}</h2>
-                {unterwegs.map(t => <PlannedTripCard key={t.id} trip={t} selected={t.id === selectedTripId} onClick={() => navigate({ name: 'tripDetail', tripId: t.id })} />)}
+                {unterwegs.map((t, i) => <div key={t.id} className={newIds?.has(`t${t.id}`) ? 'row-new' : 'list-in'} style={{ '--i': i }}><PlannedTripCard trip={t} selected={t.id === selectedTripId} onClick={() => navigate({ name: 'tripDetail', tripId: t.id })} /></div>)}
               </section>
             )}
 
             {(geplant.length > 0 || activeFilterCount === 0) && <section style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               <h2 style={{ ...tripsH2Style, color: 'var(--forest)' }}><CalendarDays size={15} />{tr('Geplant')}{geplant.length ? ` · ${geplant.length}` : ''}</h2>
-              {geplant.map(t => <PlannedTripCard key={t.id} trip={t} selected={t.id === selectedTripId} onClick={() => navigate({ name: 'tripDetail', tripId: t.id })} />)}
+              {geplant.map((t, i) => <div key={t.id} className={newIds?.has(`t${t.id}`) ? 'row-new' : 'list-in'} style={{ '--i': Math.min(i, 8) }}><PlannedTripCard trip={t} selected={t.id === selectedTripId} onClick={() => navigate({ name: 'tripDetail', tripId: t.id })} /></div>)}
               {geplant.length === 0 && activeFilterCount === 0 && (
                 <div style={{ border: '1.5px dashed #BFD0BC', borderRadius: 16, padding: 14, display: 'flex', alignItems: 'center', gap: 12 }}>
                   <span style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 2 }}>
@@ -4147,7 +4425,9 @@ function TripsHub({ trips, entries, wishlist, loading, error, navigate, onPlanne
                     <CheckCircle2 size={15} />{tr('Abgeschlossen')}{' '}{year} · {list.length} {list.length === 1 ? tr('Trip') : tr('Trips')}{naechte ? tr(' · {naechte} Nächte', { naechte: naechte }) : ''}
                   </h2>
                   {list.map((e, i) => (
-                    <EntryRow key={e.id} entry={e} last={i === list.length - 1} selected={e.id === selectedEntryId} onClick={() => navigate({ name: 'detail', entry: e })} />
+                    <div key={e.id} className={newIds?.has(`e${e.id}`) ? 'row-new' : 'list-in'} style={{ '--i': Math.min(i, 8) }}>
+                      <EntryRow entry={e} last={i === list.length - 1} selected={e.id === selectedEntryId} onClick={() => navigate({ name: 'detail', entry: e })} />
+                    </div>
                   ))}
                 </section>
               );
@@ -4175,9 +4455,24 @@ function ChecklistSection({ trip, type, onRefresh }) {
   const [text, setText] = useState('');
   const [adding, setAdding] = useState(false);
   const [showDone, setShowDone] = useState(false);
+  // Gerade abgehakte Punkte bleiben kurz an ihrem Platz (Haekchen und Durchstreichen sichtbar),
+  // bevor sie nach "Erledigt" rutschen (seit v4.16).
+  const [settling, setSettling] = useState(() => new Set());
+  // Reihenfolge nach dem Verschieben, bis die Liste vom Server neu geladen ist.
+  const [localOrder, setLocalOrder] = useState(null);
+  const [drag, setDrag] = useState(null); // { id, from, to, dy, height }
+  const rowRefs = useRef(new Map());
   const itemsRaw = (trip.items || []).filter(i => i.type === type);
-  const items = [...itemsRaw].sort((a, b) => (a.checked === b.checked) ? 0 : (a.checked ? 1 : -1));
+  const ordered = localOrder
+    ? [...itemsRaw].sort((a, b) => (localOrder.indexOf(a.id) + 1 || 1e9) - (localOrder.indexOf(b.id) + 1 || 1e9))
+    : itemsRaw;
+  const items = [...ordered].sort((a, b) => (a.checked === b.checked) ? 0 : (a.checked ? 1 : -1));
+  const openItems = items.filter(i => !i.checked);
+  const doneItems = items.filter(i => i.checked);
   const allDone = items.length > 0 && items.every(i => i.checked);
+
+  // Sobald der Server die neue Reihenfolge liefert, die lokale wieder verwerfen.
+  useEffect(() => { setLocalOrder(null); }, [trip.items]);
 
   async function addItem(e) {
     e.preventDefault();
@@ -4188,29 +4483,109 @@ function ChecklistSection({ trip, type, onRefresh }) {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ type, text: text.trim() })
       });
-      if (res.ok) { setText(''); onRefresh(); }
+      if (res.ok) { setText(''); onRefresh(true); }
     } finally {
       setAdding(false);
     }
   }
 
   async function toggle(item) {
-    await fetch(`/api/trip-items/${item.id}`, {
-      method: 'PUT', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ checked: !item.checked })
-    });
-    onRefresh();
+    const toChecked = !item.checked;
+    if (toChecked) setSettling(prev => new Set(prev).add(item.id));
+    try {
+      const res = await fetch(`/api/trip-items/${item.id}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ checked: toChecked })
+      });
+      if (!res.ok) throw new Error();
+    } catch {
+      setSettling(prev => { const n = new Set(prev); n.delete(item.id); return n; });
+      showToast(tr('Nicht gespeichert'), 'error', { label: tr('Erneut'), onClick: () => toggle(item) });
+      return;
+    }
+    if (toChecked) {
+      setTimeout(() => {
+        Promise.resolve(onRefresh(true)).finally(() =>
+          setSettling(prev => { const n = new Set(prev); n.delete(item.id); return n; }));
+      }, 650);
+    } else {
+      onRefresh(true);
+    }
   }
 
   async function remove(item) {
     await fetch(`/api/trip-items/${item.id}`, { method: 'DELETE' });
-    onRefresh();
+    onRefresh(true);
   }
 
   async function clearAll() {
     if (!(await confirmDialog(tr('Alle Punkte in dieser Liste wirklich löschen?')))) return;
     await Promise.all(items.map(item => fetch(`/api/trip-items/${item.id}`, { method: 'DELETE' })));
-    onRefresh();
+    onRefresh(true);
+  }
+
+  async function saveOrder(ids) {
+    setLocalOrder([...ids, ...doneItems.map(i => i.id)]);
+    try {
+      const res = await fetch(`/api/trips/${trip.id}/items/order`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids })
+      });
+      if (!res.ok) throw new Error();
+      onRefresh(true);
+    } catch {
+      setLocalOrder(null);
+      showToast(tr('Reihenfolge nicht gespeichert'), 'error');
+    }
+  }
+
+  // --- Verschieben per Griff (Maus, Finger) ---
+  function startDrag(e, id) {
+    if (e.button !== undefined && e.button !== 0) return;
+    e.preventDefault();
+    const from = openItems.findIndex(i => i.id === id);
+    const el = rowRefs.current.get(id);
+    if (from < 0 || !el) return;
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+    const rects = openItems.map(i => rowRefs.current.get(i.id)?.getBoundingClientRect());
+    const gap = rects[1] && rects[0] ? rects[1].top - rects[0].bottom : 8;
+    setDrag({ id, from, to: from, dy: 0, startY: e.clientY, rects, height: rects[from].height + gap });
+  }
+  function moveDrag(e) {
+    if (!drag) return;
+    const dy = e.clientY - drag.startY;
+    const r = drag.rects[drag.from];
+    const center = r.top + r.height / 2 + dy;
+    // Ziel = Anzahl der anderen Zeilen, deren Mitte oberhalb der gezogenen Zeile liegt
+    const to = drag.rects.filter((rect, i) => i !== drag.from && rect && center > rect.top + rect.height / 2).length;
+    setDrag(d => d && { ...d, dy, to });
+  }
+  function endDrag() {
+    if (!drag) return;
+    const { from, to } = drag;
+    setDrag(null);
+    if (to === from) return;
+    const ids = openItems.map(i => i.id);
+    const [moved] = ids.splice(from, 1);
+    ids.splice(to, 0, moved);
+    saveOrder(ids);
+  }
+  function keyMove(e, id) {
+    if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+    e.preventDefault();
+    const ids = openItems.map(i => i.id);
+    const from = ids.indexOf(id);
+    const to = e.key === 'ArrowUp' ? from - 1 : from + 1;
+    if (to < 0 || to >= ids.length) return;
+    ids.splice(from, 1);
+    ids.splice(to, 0, id);
+    saveOrder(ids);
+  }
+  function shiftFor(index) {
+    if (!drag || index === drag.from) return 0;
+    if (drag.from < drag.to && index > drag.from && index <= drag.to) return -drag.height;
+    if (drag.to < drag.from && index >= drag.to && index < drag.from) return drag.height;
+    return 0;
   }
 
   const templateCategory = type === 'packliste' ? 'packliste' : type === 'todo' ? 'trip_todo' : null;
@@ -4233,17 +4608,40 @@ function ChecklistSection({ trip, type, onRefresh }) {
           {tr('Noch keine Einträge. Den ersten oben hinzufügen.')}
         </div>
       )}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        {items.filter(i => showDone || !i.checked).map(item => (
-          <ChecklistRow key={item.id} item={item} onToggle={() => toggle(item)} onRemove={() => remove(item)} />
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}
+        onPointerMove={moveDrag} onPointerUp={endDrag} onPointerCancel={endDrag}>
+        {openItems.map((item, index) => {
+          const isDragged = drag && drag.id === item.id;
+          return (
+            <div key={item.id} ref={el => { if (el) rowRefs.current.set(item.id, el); else rowRefs.current.delete(item.id); }}
+              style={{
+                transform: isDragged ? `translateY(${drag.dy}px) scale(1.02)` : `translateY(${shiftFor(index)}px)`,
+                transition: isDragged ? 'none' : 'transform 0.15s ease',
+                position: 'relative', zIndex: isDragged ? 2 : 'auto',
+                boxShadow: isDragged ? '0 10px 24px rgba(30,43,31,0.18)' : 'none', borderRadius: 10
+              }}>
+              <ChecklistRow item={item} checkedOverride={settling.has(item.id)}
+                onToggle={() => toggle(item)} onRemove={() => remove(item)}
+                dragHandle={openItems.length > 1 ? {
+                  onPointerDown: (e) => startDrag(e, item.id),
+                  onKeyDown: (e) => keyMove(e, item.id),
+                  active: isDragged
+                } : null} />
+            </div>
+          );
+        })}
+        {showDone && doneItems.map((item, i) => (
+          <div key={item.id} className="list-in" style={{ '--i': Math.min(i, 8) }}>
+            <ChecklistRow item={item} onToggle={() => toggle(item)} onRemove={() => remove(item)} />
+          </div>
         ))}
       </div>
-      {items.some(i => i.checked) && (
+      {doneItems.length > 0 && (
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 4 }}>
           <button onClick={() => setShowDone(v => !v)} style={doneToggleStyle}>
             <ChevronDown size={16} style={{ transform: showDone ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s' }} />
             {showDone ? tr('Erledigte ausblenden')
-              : allDone ? tr('Alles erledigt · {length} anzeigen', { length: items.length }) : tr('{length} erledigte anzeigen', { length: items.filter(i => i.checked).length })}
+              : allDone ? tr('Alles erledigt · {length} anzeigen', { length: items.length }) : tr('{length} erledigte anzeigen', { length: doneItems.length })}
           </button>
           {allDone && (
             <button onClick={clearAll} style={{ ...doneToggleStyle, color: '#B3402A' }}>{tr('Liste löschen')}</button>
@@ -4410,11 +4808,7 @@ function OdometerView({ onBack, embedded, onChanged }) {
       )}
 
       <div style={embedded ? {} : { padding: '14px 18px 0' }}>
-        {loading && (
-          <div style={{ display: 'flex', justifyContent: 'center', padding: 40, color: 'var(--muted)' }}>
-            <Loader2 size={22} className="spin" />
-          </div>
-        )}
+        {loading && <SkeletonRows />}
         {error && <div style={{ color: '#B3402A', fontSize: 14 }}>{error}</div>}
 
         {data && (
@@ -5095,7 +5489,34 @@ function BarChart({ data, unit }) {
   );
 }
 
-function KpiCard({ label, value, icon: Icon, sub }) {
+// Kleine Verlaufslinie der letzten 12 Monate (seit v4.16). Monate ohne Wert werden
+// uebersprungen; mit weniger als zwei Werten erscheint keine Linie.
+function Sparkline({ values, height = 30, label }) {
+  const pts = (values || []).map((v, i) => [i, v]).filter(([, v]) => v !== null && v !== undefined);
+  if (pts.length < 2) return null;
+  const n = (values || []).length - 1 || 1;
+  const vals = pts.map(([, v]) => v);
+  const min = Math.min(...vals);
+  const max = Math.max(...vals);
+  const span = max - min || 1;
+  const xy = pts.map(([i, v]) => [(i / n) * 100, 4 + (1 - (v - min) / span) * (height - 8)]);
+  const d = xy.map(([x, y], i) => `${i ? 'L' : 'M'}${x.toFixed(1)} ${y.toFixed(1)}`).join(' ');
+  const area = `${d} L${xy[xy.length - 1][0].toFixed(1)} ${height} L${xy[0][0].toFixed(1)} ${height} Z`;
+  const [ex, ey] = xy[xy.length - 1];
+  return (
+    <svg viewBox={`0 0 100 ${height}`} preserveAspectRatio="none" role="img" aria-label={label}
+      style={{ width: '100%', height, display: 'block', marginTop: 8, overflow: 'visible' }}>
+      <path d={area} fill="var(--forest)" fillOpacity="0.08" className="spark-end" />
+      <path d={d} fill="none" stroke="var(--forest)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+        vectorEffect="non-scaling-stroke" className="spark-line" pathLength="400" />
+      {/* Endpunkt als Linie der Laenge 0 mit runder Kappe, damit er trotz Verzerrung rund bleibt */}
+      <path d={`M${ex.toFixed(1)} ${ey.toFixed(1)} l0.01 0`} stroke="var(--forest)" strokeWidth="6" strokeLinecap="round"
+        vectorEffect="non-scaling-stroke" className="spark-end" />
+    </svg>
+  );
+}
+
+function KpiCard({ label, value, icon: Icon, sub, spark, children }) {
   return (
     <div style={{
       background: 'var(--card-alt)', border: '1px solid var(--border)', borderRadius: 14,
@@ -5105,6 +5526,30 @@ function KpiCard({ label, value, icon: Icon, sub }) {
       <div style={{ fontVariantNumeric: 'tabular-nums', fontSize: 20, fontWeight: 700, color: 'var(--forest)', whiteSpace: 'nowrap' }}>{value}</div>
       <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 2 }}>{label}</div>
       {sub && <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 2 }}>{sub}</div>}
+      {children}
+      {spark && <Sparkline values={spark} label={tr('Verlauf der letzten 12 Monate')} />}
+    </div>
+  );
+}
+
+// km-Budget mit Markierung fuer den Soll-Stand heute (seit v4.16)
+function KmBudgetBar({ km, budget, soll }) {
+  if (!budget) return null;
+  const pct = Math.min(100, (km / budget) * 100);
+  const sollPct = soll != null ? Math.min(100, (soll / budget) * 100) : null;
+  const onTrack = soll == null || km <= soll;
+  return (
+    <div style={{ marginTop: 10 }}>
+      <div style={{ position: 'relative', height: 6, borderRadius: 3, background: '#E6EDE2' }}>
+        <div className="grow-x" style={{ position: 'absolute', inset: 0, width: `${pct}%`, borderRadius: 3, background: onTrack ? 'var(--forest)' : '#B3402A' }} />
+        {sollPct != null && <span title={tr('Soll heute')} style={{ position: 'absolute', top: -3, bottom: -3, left: `${sollPct}%`, width: 2, background: 'var(--text)', opacity: 0.35 }} />}
+      </div>
+      {soll != null && (
+        <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', fontSize: 11, marginTop: 5, columnGap: 6 }}>
+          <span style={{ color: onTrack ? '#3E6B44' : '#93341C', fontWeight: 500, whiteSpace: 'nowrap' }}>{onTrack ? tr('Im Rahmen') : tr('Über Soll')}</span>
+          <span style={{ color: 'var(--muted)', whiteSpace: 'nowrap' }}>{tr('Soll heute: {km}', { km: soll.toLocaleString(numLocale()) })}</span>
+        </div>
+      )}
     </div>
   );
 }
@@ -5152,18 +5597,20 @@ function KpiView({ onBack, embedded }) {
           <>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 10, marginBottom: 20 }}>
               <KpiCard label={tr('Trips')} value={data.stopps} icon={Tent} />
-              <KpiCard label={tr('Übernachtungen')} value={data.naechte} icon={Calendar} />
+              <KpiCard label={tr('Übernachtungen')} value={data.naechte} icon={Calendar} spark={data.verlauf?.naechte} />
               <KpiCard label={tr('Ø Bewertung')} value={data.bewertungDurchschnitt != null ? `${data.bewertungDurchschnitt}/5` : '–'} icon={Star} />
               <KpiCard label={tr('km laufender Zeitraum')} value={data.kmThisYear.toLocaleString(numLocale())} icon={Gauge}
-                sub={tr('von {kmBudget} km', { kmBudget: data.kmBudget.toLocaleString(numLocale()) })} />
+                sub={tr('von {kmBudget} km', { kmBudget: data.kmBudget.toLocaleString(numLocale()) })} spark={data.verlauf?.km}>
+                <KmBudgetBar km={data.kmThisYear} budget={data.kmBudget} soll={data.kmSollHeute} />
+              </KpiCard>
               {data.ausgabenProNacht != null && (
-                <KpiCard label={tr('Ø Übernachtung/Nacht')} value={fmtMoney(data.ausgabenProNacht)} icon={Wallet} />
+                <KpiCard label={tr('Ø Übernachtung/Nacht')} value={fmtMoney(data.ausgabenProNacht)} icon={Wallet} spark={data.verlauf?.kostenProNacht} />
               )}
               {data.ausgabenProNachtMitAktivitaeten != null && (
                 <KpiCard label={tr('Ø Übernachtung+Aktivitäten/Nacht')} value={fmtMoney(data.ausgabenProNachtMitAktivitaeten)} icon={Wallet} />
               )}
               {data.treibstoffKostenProKm != null && (
-                <KpiCard label={tr('Ø Treibstoff/Laden pro km')} value={fmtMoney(data.treibstoffKostenProKm)} icon={Wallet} />
+                <KpiCard label={tr('Ø Treibstoff/Laden pro km')} value={fmtMoney(data.treibstoffKostenProKm)} icon={Wallet} spark={data.verlauf?.treibstoffProKm} />
               )}
             </div>
 
@@ -6090,18 +6537,37 @@ function MapView({ entries, onBack, onSelectEntry, onCoordsSaved }) {
 // --- Konsolidierte Schnellzugriffs-Listen (Einkauf/To-dos ueber alle Trips) ---
 
 // Eine abhakbare Zeile; erledigte Punkte werden durchgestrichen und ausgegraut.
-function ChecklistRow({ item, onToggle, onRemove }) {
+// checkedOverride: gerade abgehakt, Server-Stand noch nicht neu geladen (seit v4.16).
+// dragHandle: { onPointerDown, onKeyDown, active } blendet links einen Griff zum Verschieben ein.
+function ChecklistRow({ item, onToggle, onRemove, checkedOverride, dragHandle }) {
+  const checked = item.checked || checkedOverride;
+  const [popped, setPopped] = useState(false);
+  function handleToggle() {
+    if (!checked) setPopped(true);
+    onToggle();
+  }
   return (
     <div style={{
-      display: 'flex', alignItems: 'center', gap: 4, background: item.checked ? 'transparent' : 'var(--card-alt)',
-      border: '1px solid var(--border)', borderRadius: 10, padding: '2px 4px 2px 2px'
+      display: 'flex', alignItems: 'center', gap: 2, background: checked ? 'transparent' : 'var(--card-alt)',
+      border: '1px solid var(--border)', borderRadius: 10, padding: '2px 4px 2px 2px', transition: 'background 0.2s'
     }}>
-      <button onClick={onToggle} aria-label={item.checked ? tr('Als offen markieren') : tr('Als erledigt markieren')} style={iconButtonStyle}>
-        {item.checked ? <CheckCircle2 size={21} color="var(--forest)" /> : <Circle size={21} color="var(--muted)" />}
+      {dragHandle && (
+        <button type="button" aria-label={tr('Verschieben (Pfeiltasten)')} onPointerDown={dragHandle.onPointerDown}
+          onKeyDown={dragHandle.onKeyDown} style={{
+            ...iconButtonStyle, width: 26, cursor: dragHandle.active ? 'grabbing' : 'grab', touchAction: 'none',
+            color: dragHandle.active ? 'var(--forest)' : '#B5BFB1'
+          }}>
+          <GripVertical size={16} />
+        </button>
+      )}
+      <button onClick={handleToggle} aria-label={checked ? tr('Als offen markieren') : tr('Als erledigt markieren')} style={iconButtonStyle}>
+        {checked
+          ? <CheckCircle2 size={21} color="var(--forest)" className={popped ? 'check-pop' : undefined} />
+          : <Circle size={21} color="var(--muted)" />}
       </button>
-      <span onClick={onToggle} style={{
-        flex: 1, fontSize: 15, cursor: 'pointer', textDecoration: item.checked ? 'line-through' : 'none',
-        color: item.checked ? '#8A9687' : 'var(--text)', padding: '10px 0'
+      <span onClick={handleToggle} style={{
+        flex: 1, fontSize: 15, cursor: 'pointer', textDecoration: checked ? 'line-through' : 'none',
+        color: checked ? '#8A9687' : 'var(--text)', padding: '10px 0', transition: 'color 0.2s'
       }}>{item.text}</span>
       {onRemove && (
         <button onClick={onRemove} aria-label={tr('Löschen')} style={{ ...iconButtonStyle, color: 'var(--muted)' }}>
@@ -6170,11 +6636,7 @@ function QuickListView({ type, title, icon: Icon, onBack, onGoTrips }) {
       </div>
 
       <div style={{ padding: '14px 18px 0' }}>
-        {loading && (
-          <div style={{ display: 'flex', justifyContent: 'center', padding: 40, color: 'var(--muted)' }}>
-            <Loader2 size={22} className="spin" />
-          </div>
-        )}
+        {loading && <SkeletonRows />}
         {error && <div style={{ color: '#B3402A', fontSize: 14 }}>{error}</div>}
 
         {!loading && !error && grouped.length === 0 && (
@@ -7218,6 +7680,91 @@ function SpotlightTour({ onDone }) {
   );
 }
 
+// --- Ziehen zum Aktualisieren (seit v4.16) ---
+// Nur auf dem Handy: Steht die Liste ganz oben und man zieht nach unten, wird nach dem
+// Loslassen sofort neu geladen, zusaetzlich zum automatischen Abgleich alle 20 Sekunden.
+const PULL_TRIGGER = 64;
+function usePullToRefresh(ref, onRefresh, enabled) {
+  const [pull, setPull] = useState(0);
+  const [state, setState] = useState('idle'); // idle | pulling | refreshing | done
+  const startY = useRef(null);
+  const pullRef = useRef(0);
+  const busy = useRef(false);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || !enabled) return;
+    function onStart(e) {
+      if (busy.current || el.scrollTop > 0 || e.touches.length !== 1) { startY.current = null; return; }
+      startY.current = e.touches[0].clientY;
+    }
+    function onMove(e) {
+      if (startY.current === null) return;
+      const dy = e.touches[0].clientY - startY.current;
+      if (dy <= 0 || el.scrollTop > 0) { if (pullRef.current) { pullRef.current = 0; setPull(0); setState('idle'); } return; }
+      e.preventDefault();
+      const damped = Math.min(110, dy * 0.5);
+      pullRef.current = damped;
+      setPull(damped);
+      setState('pulling');
+    }
+    async function onEnd() {
+      if (startY.current === null) return;
+      startY.current = null;
+      if (pullRef.current >= PULL_TRIGGER) {
+        busy.current = true;
+        setState('refreshing');
+        setPull(52);
+        try { await onRefresh(); } finally {
+          busy.current = false;
+          pullRef.current = 0;
+          setPull(0);
+          setState('done');
+          setTimeout(() => setState(s => (s === 'done' ? 'idle' : s)), 2500);
+        }
+      } else {
+        pullRef.current = 0;
+        setPull(0);
+        setState('idle');
+      }
+    }
+    el.addEventListener('touchstart', onStart, { passive: true });
+    el.addEventListener('touchmove', onMove, { passive: false });
+    el.addEventListener('touchend', onEnd);
+    el.addEventListener('touchcancel', onEnd);
+    return () => {
+      el.removeEventListener('touchstart', onStart);
+      el.removeEventListener('touchmove', onMove);
+      el.removeEventListener('touchend', onEnd);
+      el.removeEventListener('touchcancel', onEnd);
+    };
+  }, [ref, onRefresh, enabled]);
+  return { pull, state };
+}
+
+function PullIndicator({ pull, state, lastRefresh }) {
+  if (state === 'done' && lastRefresh) {
+    return (
+      <div className="fade-up" role="status" style={{ textAlign: 'center', fontSize: 12, color: 'var(--muted)', padding: '8px 0 2px' }}>
+        {tr('Aktualisiert um {time}', { time: lastRefresh })}
+      </div>
+    );
+  }
+  if (state === 'idle' || pull <= 0) return null;
+  const ready = pull >= PULL_TRIGGER || state === 'refreshing';
+  return (
+    <div role="status" aria-live="polite" style={{
+      height: pull, overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+      fontSize: 12, color: 'var(--muted)', transition: state === 'pulling' ? 'none' : 'height 0.2s ease-out'
+    }}>
+      <span className={state === 'refreshing' ? 'spin' : undefined} style={{
+        width: 24, height: 24, borderRadius: '50%', border: '2.5px solid #E6EDE2', borderTopColor: 'var(--forest)',
+        transform: state === 'refreshing' ? undefined : `rotate(${(pull / PULL_TRIGGER) * 270}deg)`, flexShrink: 0
+      }} />
+      {state === 'refreshing' ? tr('Wird aktualisiert') : ready ? tr('Loslassen zum Aktualisieren') : tr('Ziehen zum Aktualisieren')}
+    </div>
+  );
+}
+
 export default function CampingTagebuch() {
   const [entries, setEntries] = useState([]);
   const [lessons, setLessons] = useState([]);
@@ -7531,6 +8078,38 @@ export default function CampingTagebuch() {
     loadEntries(); loadLessons(); loadTrips(); loadWishlist();
   }
 
+  // Ziehen zum Aktualisieren: alles still neu laden; neu hinzugekommene Trips und Berichte
+  // (z.B. von der zweiten Person) danach kurz markieren.
+  const knownIdsRef = useRef(null);
+  const latestRef = useRef({ entries, trips });
+  latestRef.current = { entries, trips };
+  const [newIds, setNewIds] = useState(null);
+  const [lastRefresh, setLastRefresh] = useState(null);
+  const refreshAll = useCallback(async () => {
+    const { entries: e0, trips: t0 } = latestRef.current;
+    knownIdsRef.current = new Set([...e0.map(e => `e${e.id}`), ...t0.map(t => `t${t.id}`)]);
+    await Promise.all([loadEntries(true), loadLessons(true), loadTrips(true), loadWishlist(true)]);
+    window.dispatchEvent(new Event('cd-refresh'));
+    // Vergleich nur fuer diese Aktualisierung, nicht fuer spaetere automatische Abgleiche
+    setTimeout(() => { knownIdsRef.current = null; }, 300);
+    const now = new Date();
+    setLastRefresh(`${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`);
+  }, [loadEntries, loadLessons, loadTrips, loadWishlist]);
+  useEffect(() => {
+    const known = knownIdsRef.current;
+    if (!known) return;
+    const fresh = [...entries.map(e => `e${e.id}`), ...trips.map(t => `t${t.id}`)].filter(id => !known.has(id));
+    if (fresh.length === 0) return;
+    fresh.forEach(id => known.add(id));
+    setNewIds(prev => new Set([...(prev || []), ...fresh]));
+  }, [entries, trips]);
+  useEffect(() => {
+    if (!newIds) return;
+    const timer = setTimeout(() => setNewIds(null), 2600);
+    return () => clearTimeout(timer);
+  }, [newIds]);
+  const { pull, state: pullState } = usePullToRefresh(scrollRef, refreshAll, !desktop);
+
   // Wechsel des Hauptbereichs: Trips beginnt dann wie bisher mit der Liste.
   function selectTab(key) {
     if (key === 'trips' && activeTab !== 'trips') setTripsMode('liste');
@@ -7552,7 +8131,7 @@ export default function CampingTagebuch() {
   const tripsHub = (
     <TripsHub trips={trips} entries={entries} wishlist={wishlist} loading={loading || tripsLoading}
       error={error || tripsError} navigate={navigate} onPlanned={handlePlannedTrip}
-      mode={tripsMode} onModeChange={changeTripsMode} selectedTripId={selectedTripId} selectedEntryId={selectedEntryId} />
+      mode={tripsMode} onModeChange={changeTripsMode} selectedTripId={selectedTripId} selectedEntryId={selectedEntryId} newIds={newIds} />
   );
   // Inhaltsbreite am Laptop: Kalender, Saison und Karte breit, alles andere als lesbare Spalte.
   const contentMaxWidth = !desktop ? undefined
@@ -7566,6 +8145,7 @@ export default function CampingTagebuch() {
   const content = (
     <>
       <OfflineBanner />
+      {!desktop && <PullIndicator pull={pull} state={pullState} lastRefresh={lastRefresh} />}
       <ErrorBoundary onReset={() => setView({ name: 'home' })}>
       <div key={viewKey} className="view-transition" style={{ minHeight: '100%', maxWidth: contentMaxWidth, margin: desktop ? '0 auto' : undefined }}>
       {split && view.name === 'trips' && <SplitPlaceholder onAdd={() => navigate({ name: 'addTrip' })} />}
@@ -7711,9 +8291,47 @@ export default function CampingTagebuch() {
         .view-transition { animation: viewEnter 0.22s ease-out; }
         @keyframes toastIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
         @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
-        @keyframes skeletonPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
-        .skeleton { animation: skeletonPulse 1.4s ease-in-out infinite; }
-        @media (prefers-reduced-motion: reduce) { .skeleton, .view-transition { animation: none; } }
+        /* Platzhalter beim Laden: ruhiger Lichtstreifen von links nach rechts (seit v4.16) */
+        @keyframes skeletonShimmer { from { background-position: 100% 0; } to { background-position: 0 0; } }
+        .skeleton {
+          background-image: linear-gradient(90deg, rgba(255,255,255,0) 0%, rgba(255,255,255,0) 35%, rgba(255,255,255,0.55) 50%, rgba(255,255,255,0) 65%, rgba(255,255,255,0) 100%) !important;
+          background-size: 300% 100% !important; animation: skeletonShimmer 1.6s linear infinite;
+        }
+        /* Listen blenden nach dem Laden leicht versetzt ein */
+        @keyframes listIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+        .list-in { animation: listIn 0.3s ease-out both; animation-delay: calc(var(--i, 0) * 45ms); }
+        /* Toast: schmale Linie fuer die verbleibende Anzeigezeit */
+        @keyframes toastLife { from { transform: scaleX(1); } to { transform: scaleX(0); } }
+        .toast-life { position: absolute; left: 14px; right: 14px; bottom: 4px; height: 2px; border-radius: 1px;
+          background: rgba(255,255,255,0.6); transform-origin: left; animation: toastLife linear forwards; }
+        /* Ungueltiges Feld wackelt kurz */
+        @keyframes shake { 0%, 100% { transform: translateX(0); } 20% { transform: translateX(-5px); } 40% { transform: translateX(5px); } 60% { transform: translateX(-3px); } 80% { transform: translateX(3px); } }
+        .shake { animation: shake 0.36s ease-in-out; }
+        /* Fortschritt ohne bekannten Prozentwert (z.B. Server wandelt HEIC um) */
+        @keyframes indet { from { transform: translateX(-100%); } to { transform: translateX(290%); } }
+        .bar-indet { animation: indet 1.3s ease-in-out infinite; }
+        /* Haekchen und Kreise zeichnen sich */
+        @keyframes drawStroke { from { stroke-dashoffset: var(--len, 60); } to { stroke-dashoffset: 0; } }
+        .draw { stroke-dasharray: var(--len, 60); animation: drawStroke 0.35s ease-out both; }
+        @keyframes fadeUp { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+        .fade-up { animation: fadeUp 0.3s ease-out both; }
+        /* Abhaken: Haekchen ploppt kurz auf */
+        @keyframes checkPop { 0% { transform: scale(0.6); } 60% { transform: scale(1.15); } 100% { transform: scale(1); } }
+        .check-pop { animation: checkPop 0.28s ease-out; }
+        /* Verlaufslinie zeichnet sich einmal */
+        @keyframes sparkDraw { from { stroke-dashoffset: 400; } to { stroke-dashoffset: 0; } }
+        .spark-line { stroke-dasharray: 400; animation: sparkDraw 1s ease-out both; }
+        .spark-end { animation: fadeIn 0.3s 0.9s both; }
+        @keyframes growWidth { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+        .grow-x { transform-origin: left; animation: growWidth 1s ease-out both; }
+        /* Neu hereingekommene Eintraege kurz gelb hinterlegt */
+        @keyframes newRow { from { background-color: #F5E3A0; } to { background-color: rgba(251,244,220,0); } }
+        .row-new { animation: newRow 2.4s ease-out both; border-radius: 12px; }
+        @media (prefers-reduced-motion: reduce) {
+          .skeleton, .view-transition, .list-in, .shake, .bar-indet, .draw, .fade-up, .check-pop,
+          .spark-line, .spark-end, .grow-x, .row-new, .toast-life { animation: none !important; }
+          .spin { animation-duration: 2s; }
+        }
         /* Die App fuellt genau das Fenster. Den Platz fuer die Home-Leiste deckt der Innenabstand
            der Navigationsleiste ab (env(safe-area-inset-bottom)). */
         .app-shell { position: fixed; top: 0; bottom: 0; left: 0; right: 0; }
